@@ -210,6 +210,7 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │
 ├── docs/
 │   ├── HANDOVER.md                本文档
+│   ├── ArchitectureIntro.html     ★ 系统架构说明（5 张内联 SVG，自包含，浏览器直接打开）
 │   └── dify-improvement-plan.md   Dify 知识库改造方案（设计文档）
 │
 ├── samples/                   测试素材

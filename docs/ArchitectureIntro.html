@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PageIndex — Architecture</title>
+<style>
+:root{
+  --bg:#FBFAF7; --surface:#FFFFFF; --border:rgba(0,0,0,.12); --border-soft:rgba(0,0,0,.07);
+  --text:#2C2C2A; --text-2:#5F5E5A; --text-3:#888780; --code-bg:#F1EFE8;
+  --accent:#185FA5;
+  --dg-gray-50:#F1EFE8; --dg-gray-400:#888780; --dg-gray-600:#5F5E5A; --dg-gray-800:#2C2C2A;
+  --dg-blue-50:#E6F1FB; --dg-blue-600:#185FA5; --dg-blue-800:#0C447C;
+  --dg-teal-50:#E1F5EE; --dg-teal-600:#0F6E56; --dg-teal-800:#04342C;
+  --dg-amber-50:#FAEEDA; --dg-amber-600:#854F0B; --dg-amber-800:#412402;
+  --dg-card:#FFFFFF;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#1a1a19; --surface:#232322; --border:rgba(255,255,255,.16); --border-soft:rgba(255,255,255,.09);
+    --text:#F1EFE8; --text-2:#B4B2A9; --text-3:#888780; --code-bg:#2C2C2A;
+    --accent:#85B7EB;
+    --dg-gray-50:#444441; --dg-gray-400:#B4B2A9; --dg-gray-600:#D3D1C7; --dg-gray-800:#F1EFE8;
+    --dg-blue-50:#0C447C; --dg-blue-600:#85B7EB; --dg-blue-800:#E6F1FB;
+    --dg-teal-50:#085041; --dg-teal-600:#5DCAA5; --dg-teal-800:#E1F5EE;
+    --dg-amber-50:#633806; --dg-amber-600:#EF9F27; --dg-amber-800:#FAEEDA;
+    --dg-card:#1a1a19;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:56px 24px 96px}
+header{border-bottom:1px solid var(--border);padding-bottom:28px;margin-bottom:40px}
+h1{font-size:30px;font-weight:600;margin:0 0 10px;letter-spacing:-.02em}
+.sub{color:var(--text-2);font-size:15px;margin:0}
+.meta{color:var(--text-3);font-size:13px;margin-top:16px;font-family:var(--mono)}
+h2{font-size:20px;font-weight:600;margin:56px 0 16px;padding-top:8px;letter-spacing:-.01em}
+h3{font-size:16px;font-weight:600;margin:32px 0 10px}
+p{margin:0 0 16px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:.15em .4em;border-radius:4px}
+pre{background:var(--code-bg);border:1px solid var(--border-soft);border-radius:10px;padding:16px 18px;overflow-x:auto;margin:0 0 18px}
+pre code{background:none;padding:0;font-size:13px;line-height:1.6}
+table{width:100%;border-collapse:collapse;margin:0 0 20px;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border-soft);vertical-align:top}
+th{font-weight:600;color:var(--text-2);font-size:13px;border-bottom:1px solid var(--border)}
+td code{font-size:12px}
+figure{margin:0 0 24px;background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:22px 18px 14px}
+figure svg{display:block;width:100%;height:auto}
+figcaption{color:var(--text-3);font-size:13px;margin-top:14px;text-align:center}
+svg text{font-family:var(--sans)}
+nav.toc{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:20px 24px;margin-bottom:8px}
+nav.toc h3{margin:0 0 10px;font-size:14px;color:var(--text-2);text-transform:uppercase;letter-spacing:.06em}
+nav.toc ol{margin:0;padding-left:20px;color:var(--text-2);font-size:14px}
+nav.toc li{margin:4px 0}
+nav.toc a{text-decoration:none}
+nav.toc a:hover{text-decoration:underline}
+.note{border-left:3px solid var(--dg-amber-600);background:var(--dg-amber-50);color:var(--dg-amber-800);padding:14px 18px;border-radius:0 10px 10px 0;margin:0 0 20px;font-size:14px}
+.note strong{font-weight:600}
+.key{border-left:3px solid var(--accent);background:var(--dg-blue-50);color:var(--dg-blue-800);padding:14px 18px;border-radius:0 10px 10px 0;margin:0 0 20px;font-size:14px}
+ul,ol{padding-left:22px;margin:0 0 16px}
+li{margin:6px 0}
+footer{margin-top:72px;padding-top:24px;border-top:1px solid var(--border);color:var(--text-3);font-size:13px}
+@media print{body{background:#fff}figure{break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>PageIndex — Architecture</h1>
+  <p class="sub">How the engine is put together: two indexing engines, one agentic retrieval loop, and the storage model that connects them.</p>
+  <p class="meta">Pinned to upstream commit 71714e8 · v0.2.10 · MIT</p>
+</header>
+
+<nav class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#summary">The one-sentence version</a></li>
+    <li><a href="#layers">Layered architecture</a></li>
+    <li><a href="#indexing">Two indexing paths</a></li>
+    <li><a href="#retrieval">The retrieval loop</a></li>
+    <li><a href="#deps">External dependencies</a></li>
+    <li><a href="#storage">Storage and the node model</a></li>
+    <li><a href="#details">Implementation details worth knowing</a></li>
+    <li><a href="#extensions">How this project extends it</a></li>
+  </ol>
+</nav>
+
+<h2 id="summary">1. The one-sentence version</h2>
+
+<div class="key">
+  <strong>Two indexing engines that produce the same tree, plus one agentic retrieval loop. Everything else is supporting machinery.</strong>
+</div>
+
+<p>The consequence of that design is the cleanest thing about the codebase: <strong>the retrieval side does not care how a document was indexed.</strong> Swap the indexing engine and no retrieval code changes.</p>
+
+<p>This project already leans on that property. Adding the Azure Document Intelligence extractor changed only <em>where the text comes from</em>; the tree builder and the retrieval loop were untouched.</p>
+
+<h3>What is deliberately absent</h3>
+<p>There is no vector store and no embedding model anywhere in the dependency list. Not even <code>numpy</code>. Retrieval is the chat model reasoning over an explicit tree, which is what makes an answer traceable to a page number rather than to a cosine score.</p>
+
+<table>
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td>Package</td><td><code>pageindex</code> 0.2.10, MIT, upstream <code>VectifyAI/PageIndex</code></td></tr>
+  <tr><td>Python</td><td>&gt;= 3.10</td></tr>
+  <tr><td>Indexing cost</td><td>zero for the <code>flash</code> skeleton; per-document for <code>classic</code></td></tr>
+  <tr><td>Retrieval primitives</td><td>4 read-only tools</td></tr>
+  <tr><td>Vector / embedding deps</td><td>none</td></tr>
+</table>
+
+<h2 id="layers">2. Layered architecture</h2>
+
+<p>Five layers, but only two of them hold real logic. The rest are adapters and storage.</p>
+
+<figure>
+<svg viewBox="0 0 680 360" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>PageIndex layered architecture</title>
+  <desc>Entry points, indexing engines, retrieval loop, storage, and external dependencies.</desc>
+
+  <rect x="40" y="20" width="600" height="56" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="48" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Entry points</text>
+  <rect x="160" y="30" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="214" y="48" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">CLI</text>
+  <rect x="279" y="30" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="333" y="48" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Python SDK</text>
+  <rect x="398" y="30" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="452" y="48" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">MCP bridge</text>
+  <rect x="517" y="30" width="111" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="572" y="48" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Chat stream</text>
+
+  <rect x="40" y="86" width="600" height="56" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="52" y="114" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">Indexing</text>
+  <rect x="160" y="96" width="148" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="234" y="114" font-size="12" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">flash (offline)</text>
+  <rect x="318" y="96" width="148" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="392" y="114" font-size="12" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">classic (LLM)</text>
+  <rect x="476" y="96" width="152" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="552" y="114" font-size="12" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">Markdown path</text>
+
+  <rect x="40" y="152" width="600" height="56" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="52" y="180" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">Retrieval</text>
+  <rect x="160" y="162" width="228" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="274" y="180" font-size="12" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">agent loop (reasons over the tree)</text>
+  <rect x="400" y="162" width="228" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="514" y="180" font-size="12" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">4 read-only tools</text>
+
+  <rect x="40" y="218" width="600" height="56" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="246" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Storage</text>
+  <rect x="160" y="228" width="228" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="274" y="246" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">local DocStore (JSON)</text>
+  <rect x="400" y="228" width="228" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="514" y="246" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">cloud API (pageindex.ai)</text>
+
+  <rect x="40" y="284" width="600" height="56" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="312" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Dependencies</text>
+  <rect x="160" y="294" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="214" y="312" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">LiteLLM</text>
+  <rect x="279" y="294" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="333" y="312" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">PDF parsers</text>
+  <rect x="398" y="294" width="109" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="452" y="312" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">mcp</text>
+  <rect x="517" y="294" width="111" height="36" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="572" y="312" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">openai-agents</text>
+</svg>
+<figcaption>Figure 1 — Five layers. Real logic lives in the indexing and retrieval rows.</figcaption>
+</figure>
+
+<h2 id="indexing">3. Two indexing paths</h2>
+
+<p>The two engines have very different cost profiles, and the choice is per document.</p>
+
+<figure>
+<svg viewBox="0 0 680 380" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Two indexing paths</title>
+  <desc>flash builds the tree offline from layout statistics; classic uses an LLM to read the table of contents.</desc>
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="240" y="20" width="200" height="44" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="340" y="42" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Input PDF</text>
+
+  <path d="M320 64 V76 H187 V88" fill="none" stroke="var(--dg-teal-600)" stroke-width="1.5" marker-end="url(#a1)"/>
+  <path d="M360 64 V76 H493 V88" fill="none" stroke="var(--dg-amber-600)" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="40" y="90" width="295" height="202" rx="14" fill="var(--dg-teal-50)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="58" y="110" font-size="13" font-weight="500" fill="var(--dg-teal-800)">flash — layout statistics</text>
+  <text x="58" y="126" font-size="11" fill="var(--dg-teal-600)">no LLM, free, deterministic</text>
+  <rect x="58" y="136" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="70" y="152" font-size="12" fill="var(--dg-teal-800)" dominant-baseline="central">Character-level parse (pypdfium2)</text>
+  <rect x="58" y="174" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="70" y="190" font-size="12" fill="var(--dg-teal-800)" dominant-baseline="central">Header / footer / column classification</text>
+  <rect x="58" y="212" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="70" y="228" font-size="12" fill="var(--dg-teal-800)" dominant-baseline="central">Heading detection (size / position)</text>
+  <rect x="58" y="250" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="70" y="266" font-size="12" fill="var(--dg-teal-800)" dominant-baseline="central">Clustering → outline assembly</text>
+
+  <rect x="345" y="90" width="295" height="202" rx="14" fill="var(--dg-amber-50)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="363" y="110" font-size="13" font-weight="500" fill="var(--dg-amber-800)">classic — LLM reads the TOC</text>
+  <text x="363" y="126" font-size="11" fill="var(--dg-amber-600)">needs an LLM, semantic, costs money</text>
+  <rect x="363" y="136" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="375" y="152" font-size="12" fill="var(--dg-amber-800)" dominant-baseline="central">Locate the TOC pages</text>
+  <rect x="363" y="174" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="375" y="190" font-size="12" fill="var(--dg-amber-800)" dominant-baseline="central">Extract entries, verify completeness</text>
+  <rect x="363" y="212" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="375" y="228" font-size="12" fill="var(--dg-amber-800)" dominant-baseline="central">Map entries to physical pages</text>
+  <rect x="363" y="250" width="259" height="32" rx="6" fill="var(--dg-card)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="375" y="266" font-size="12" fill="var(--dg-amber-800)" dominant-baseline="central">Split nodes by page range</text>
+
+  <path d="M187 292 V302 H340" fill="none" stroke="var(--dg-gray-600)" stroke-width="1.5"/>
+  <path d="M493 292 V302 H340" fill="none" stroke="var(--dg-gray-600)" stroke-width="1.5"/>
+  <line x1="340" y1="302" x2="340" y2="312" stroke="var(--dg-gray-600)" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="170" y="316" width="340" height="44" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="340" y="338" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Same tree shape (title / node_id / page range)</text>
+</svg>
+<figcaption>Figure 2 — Both engines emit the same node structure, which is why retrieval is engine-agnostic.</figcaption>
+</figure>
+
+<h3>Why the offline path matters</h3>
+<p>Because the <code>flash</code> skeleton needs no LLM, the entire corpus can be parsed and its structure inspected before spending anything. In this project that is what makes the 10-document corpus cheap to work with: the skeleton build takes about 45 seconds and costs nothing.</p>
+
+<p>The <code>classic</code> path is more accurate on documents that have a real table of contents, but note what the author put next to it — <code>check_if_toc_extraction_is_complete</code>, <code>check_if_toc_transformation_is_complete</code>, <code>_validate_physical_indices</code>. Those functions exist because the LLM step is not reliable and has to be verified.</p>
+
+<h2 id="retrieval">4. The retrieval loop</h2>
+
+<p>At query time the chat model is not given a ranked list of chunks. It is given <em>tools</em> and a tree, and it decides what to look at.</p>
+
+<figure>
+<svg viewBox="0 0 680 310" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>The retrieval agent loop</title>
+  <desc>The model repeatedly calls four tools to inspect the tree and fetch page content, then answers with page citations.</desc>
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="240" y="20" width="200" height="44" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="340" y="42" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">User question</text>
+  <line x1="340" y1="64" x2="340" y2="84" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="140" y="90" width="400" height="52" rx="10" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="340" y="108" font-size="13" font-weight="500" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">Agent loop — the model chooses where to look</text>
+  <text x="340" y="126" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">no embeddings, no similarity ranking</text>
+
+  <path d="M340 142 V160" fill="none" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="40" y="166" width="142" height="48" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="111" y="182" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">browse_documents</text>
+  <text x="111" y="200" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">list documents</text>
+
+  <rect x="192" y="166" width="142" height="48" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="263" y="182" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">get_document</text>
+  <text x="263" y="200" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">document metadata</text>
+
+  <rect x="344" y="166" width="142" height="48" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="415" y="182" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">…_document_structure</text>
+  <text x="415" y="200" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">view tree (paginated)</text>
+
+  <rect x="496" y="166" width="142" height="48" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="567" y="182" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">get_page_content</text>
+  <text x="567" y="200" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">fetch page text</text>
+
+  <path d="M638 190 H660 V116 H546" fill="none" stroke="var(--dg-blue-600)" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a2)"/>
+  <text x="666" y="152" font-size="11" fill="var(--dg-blue-600)" text-anchor="end" dominant-baseline="central">reason again</text>
+
+  <line x1="340" y1="214" x2="340" y2="234" stroke="var(--dg-gray-600)" stroke-width="1.5" marker-end="url(#a2)"/>
+
+  <rect x="190" y="238" width="300" height="48" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="340" y="256" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Answer with page citations</text>
+  <text x="340" y="274" font-size="11" fill="var(--dg-gray-600)" text-anchor="middle" dominant-baseline="central">points at a page, not at "a similar passage"</text>
+</svg>
+<figcaption>Figure 3 — The loop is driven by <code>openai-agents</code>; <code>chat_stream.py</code> wraps it for streaming.</figcaption>
+</figure>
+
+<h3>The tool surface is tiny</h3>
+<pre><code>_READ_TOOLS = ("browse_documents", "get_document",
+               "get_document_structure", "get_page_content")
+_MANAGEMENT_TOOLS = ("remove_document",)</code></pre>
+
+<table>
+  <tr><th>Tool</th><th>Purpose</th><th>Note</th></tr>
+  <tr><td><code>browse_documents</code></td><td>List documents and folders</td><td>Entry point for multi-document corpora</td></tr>
+  <tr><td><code>get_document</code></td><td>Document metadata</td><td>Status, page count, description</td></tr>
+  <tr><td><code>get_document_structure</code></td><td>Return the tree</td><td><strong>Paginates</strong> when the tree exceeds a budget</td></tr>
+  <tr><td><code>get_page_content</code></td><td>Fetch page text</td><td>Accepts a page spec like <code>"1-3,5"</code></td></tr>
+  <tr><td><code>remove_document</code></td><td>Delete a document</td><td>Not exposed by default</td></tr>
+</table>
+
+<div class="note">
+  <strong>Why <code>get_document_structure</code> paginates.</strong> It splits oversized trees via <code>_split_structure</code> and <code>_split_oversized_node</code>. On the AIA corpus this is observable: a 452,593-character tree comes back as <strong>9 parts</strong>. This is intentional, not a defect — but it is also the main driver of retrieval cost, because every part is a round trip.
+</div>
+
+<h3>Defensive details</h3>
+<p>Two small things in <code>agent_tools.py</code> say a lot about running this in production:</p>
+<ul>
+  <li><code>_coerce_bool_args</code> — the docstring reads: <em>"Models routinely send booleans as JSON strings ("false"); the bare truthiness tests downstream would read those as True."</em></li>
+  <li>Response envelopes carry a <code>next_steps</code> field, so each tool result tells the model what it could usefully do next rather than leaving it to guess.</li>
+</ul>
+
+<h2 id="deps">5. External dependencies</h2>
+
+<p>Grouped by purpose. Three entries are optional extras rather than hard requirements.</p>
+
+<figure>
+<svg viewBox="0 0 680 262" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>External dependencies grouped by purpose</title>
+  <desc>LLM access, PDF parsing, protocol and utilities, and bundled data tables.</desc>
+
+  <rect x="40" y="40" width="142" height="202" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="52" y="62" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">LLM access</text>
+  <text x="52" y="88" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">litellm</text>
+  <text x="52" y="112" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">openai</text>
+  <text x="52" y="136" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">openai-agents</text>
+  <text x="52" y="160" font-size="11" fill="var(--dg-blue-800)" dominant-baseline="central">anthropic</text>
+  <text x="52" y="178" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">optional</text>
+  <text x="52" y="202" font-size="11" fill="var(--dg-blue-800)" dominant-baseline="central">claude-agent-sdk</text>
+  <text x="52" y="220" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">optional</text>
+
+  <rect x="192" y="40" width="142" height="202" rx="12" fill="var(--dg-teal-50)" stroke="var(--dg-teal-600)" stroke-width="0.5"/>
+  <text x="204" y="62" font-size="12" font-weight="500" fill="var(--dg-teal-800)" dominant-baseline="central">PDF parsing</text>
+  <text x="204" y="88" font-size="11" fill="var(--dg-teal-600)" dominant-baseline="central">pypdfium2</text>
+  <text x="204" y="106" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">char-level</text>
+  <text x="204" y="130" font-size="11" fill="var(--dg-teal-600)" dominant-baseline="central">PyPDF2</text>
+  <text x="204" y="148" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">text layer</text>
+  <text x="204" y="172" font-size="11" fill="var(--dg-teal-600)" dominant-baseline="central">Pillow</text>
+  <text x="204" y="190" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">images</text>
+  <text x="204" y="214" font-size="11" fill="var(--dg-teal-800)" dominant-baseline="central">pymupdf (optional)</text>
+
+  <rect x="344" y="40" width="142" height="202" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="356" y="62" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Protocol &amp; utils</text>
+  <text x="356" y="88" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">mcp</text>
+  <text x="356" y="112" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">urllib3</text>
+  <text x="356" y="136" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">requests</text>
+  <text x="356" y="160" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">python-dotenv</text>
+  <text x="356" y="184" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">pyyaml / regex</text>
+  <text x="356" y="208" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">sortedcontainers</text>
+
+  <rect x="496" y="40" width="144" height="202" rx="12" fill="var(--dg-amber-50)" stroke="var(--dg-amber-600)" stroke-width="0.5"/>
+  <text x="508" y="62" font-size="12" font-weight="500" fill="var(--dg-amber-800)" dominant-baseline="central">Bundled data</text>
+  <text x="508" y="88" font-size="11" fill="var(--dg-amber-600)" dominant-baseline="central">dictionaries</text>
+  <text x="508" y="112" font-size="11" fill="var(--dg-amber-600)" dominant-baseline="central">glyph name table</text>
+  <text x="508" y="136" font-size="11" fill="var(--dg-amber-600)" dominant-baseline="central">boilerplate phrases</text>
+  <text x="508" y="160" font-size="11" fill="var(--dg-amber-600)" dominant-baseline="central">unicode normalization</text>
+  <text x="508" y="184" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">ships in the wheel</text>
+  <text x="508" y="208" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">~1 MB</text>
+</svg>
+<figcaption>Figure 4 — Four groups. Notably missing: any vector store, embedding model, or numerical library.</figcaption>
+</figure>
+
+<table>
+  <tr><th>Group</th><th>Package</th><th>Why it is there</th></tr>
+  <tr><td rowspan="5">LLM access</td><td><code>litellm==1.97.0</code></td><td>Model routing layer — this is why any provider works</td></tr>
+  <tr><td><code>openai&gt;=1.70</code></td><td>Client used by the agent runtime</td></tr>
+  <tr><td><code>openai-agents&gt;=0.18.1</code></td><td>Drives the retrieval loop</td></tr>
+  <tr><td><code>anthropic</code> <em>(extra)</em></td><td><code>pip install "pageindex[anthropic]"</code></td></tr>
+  <tr><td><code>claude-agent-sdk</code> <em>(extra)</em></td><td><code>pip install "pageindex[claude]"</code></td></tr>
+  <tr><td rowspan="4">PDF parsing</td><td><code>pypdfium2==5.13.0</code></td><td>Backs <code>flash</code>'s character-level parsing</td></tr>
+  <tr><td><code>PyPDF2==3.0.1</code></td><td>Text-layer extraction — the path that mangles tables</td></tr>
+  <tr><td><code>Pillow&gt;=9.0</code></td><td>Image handling</td></tr>
+  <tr><td><code>pymupdf</code> <em>(optional)</em></td><td>Commented out in <code>requirements.txt</code></td></tr>
+  <tr><td rowspan="2">Protocol</td><td><code>mcp&gt;=1.19,&lt;3</code></td><td>MCP bridge</td></tr>
+  <tr><td><code>urllib3&gt;=1.26</code></td><td>MCP retries use <code>Retry(allowed_methods=...)</code></td></tr>
+  <tr><td rowspan="5">Utilities</td><td><code>requests</code></td><td>HTTP</td></tr>
+  <tr><td><code>python-dotenv</code></td><td>Reads <code>.env</code></td></tr>
+  <tr><td><code>pyyaml</code></td><td>Reads <code>config.yaml</code></td></tr>
+  <tr><td><code>regex</code></td><td>Unicode-aware patterns</td></tr>
+  <tr><td><code>sortedcontainers</code></td><td>Ordered structures in the flash pipeline</td></tr>
+  <tr><td>Bundled data</td><td><code>pageindex/flash/data/*.json</code></td><td>Shipped in the wheel; excluded <code>assets/</code> is not</td></tr>
+</table>
+
+<h2 id="storage">6. Storage and the node model</h2>
+
+<p>The tree and the page text are stored separately. The tree is small and can be held in memory; the text is large and fetched on demand.</p>
+
+<figure>
+<svg viewBox="0 0 680 282" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Storage layout and tree node fields</title>
+  <desc>Documents are stored in per-document directories with tree, pages and metadata separate; nodes address text by page range.</desc>
+
+  <rect x="40" y="40" width="295" height="222" rx="14" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="58" y="62" font-size="13" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Local store layout</text>
+  <text x="58" y="88" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">index_store/</text>
+  <text x="58" y="108" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">├── manifest.json</text>
+  <text x="230" y="108" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">document list</text>
+  <text x="58" y="128" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">├── .lock</text>
+  <text x="230" y="128" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">write lock</text>
+  <text x="58" y="148" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">└── docs/</text>
+  <text x="58" y="168" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">    └── pi-30695a4c/</text>
+  <text x="58" y="188" font-size="11" fill="var(--dg-blue-600)" font-family="var(--mono)" dominant-baseline="central">        ├── tree.json</text>
+  <text x="230" y="188" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">tree + summaries</text>
+  <text x="58" y="208" font-size="11" fill="var(--dg-blue-600)" font-family="var(--mono)" dominant-baseline="central">        ├── pages.json</text>
+  <text x="230" y="208" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">page text</text>
+  <text x="58" y="228" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">        └── doc.json</text>
+  <text x="230" y="228" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">metadata</text>
+  <text x="58" y="248" font-size="11" fill="var(--dg-gray-400)" dominant-baseline="central">writes are atomic, so no half-built index</text>
+
+  <rect x="345" y="40" width="295" height="222" rx="14" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="363" y="62" font-size="13" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">Tree node fields</text>
+  <text x="363" y="88" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">{</text>
+  <text x="363" y="108" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "title": "Chairman's…",</text>
+  <text x="363" y="128" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "node_id": "0003",</text>
+  <text x="363" y="148" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "start_index": 5,</text>
+  <text x="363" y="168" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "end_index": 12,</text>
+  <text x="363" y="188" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "summary": "…",</text>
+  <text x="363" y="208" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">  "nodes": [ … ]</text>
+  <text x="363" y="228" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">}</text>
+  <text x="363" y="248" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">node_id + page range = the address</text>
+</svg>
+<figcaption>Figure 5 — <code>node_id</code> plus the page range is what makes an answer citable.</figcaption>
+</figure>
+
+<p>This split is worth copying. This project's own navigator uses the same shape — a small always-loaded <code>manifest.json</code> for routing, and large per-document trees fetched by key.</p>
+
+<h2 id="details">7. Implementation details worth knowing</h2>
+
+<h3>Configuration lives in <code>pageindex/config.yaml</code></h3>
+
+<pre><code>toc_check_page_num: 20          # how many leading pages to scan for a TOC
+max_page_num_each_node: 10      # cap on pages per node
+max_token_num_each_node: 20000
+if_add_node_id: "yes"
+if_add_node_summary: "yes"
+if_add_doc_description: "no"
+if_add_node_text: "no"          # &lt;-- why the tree has no body text by default</code></pre>
+
+<p>That last line is the single most common surprise. With <code>if_add_node_text: "no"</code> the body text is stripped after summaries are generated, so the tree carries titles and summaries but nothing you can quote. Retrieval has to go back to <code>pages.json</code> — which is by design, but it means a caller who only reads the tree will find no content in it.</p>
+
+<h3>Five things that will cost you an afternoon</h3>
+
+<table>
+  <tr><th>#</th><th>Issue</th><th>What to do</th></tr>
+  <tr>
+    <td>1</td>
+    <td><code>md_to_tree()</code> has a real bug: <code>summary_token_threshold</code> defaults to <code>None</code>, and <code>get_node_summary()</code> compares <code>num_tokens &lt; summary_token_threshold</code> — a <code>TypeError</code>.</td>
+    <td>Pass it explicitly. The CLI defaults to 200. The Markdown path is simply less tested than the PDF path.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>The local client accepts <strong>PDF only</strong> (<code>local_api.py</code> rejects anything else), so Markdown cannot enter the normal retrieval path.</td>
+    <td>Either pre-convert to PDF, or build your own layer — which is what <code>nav/</code> in this project does.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>PDF parsing uses <code>ProcessPoolExecutor(mp_context=spawn)</code>.</td>
+    <td>The calling script must be a real file with an <code>if __name__ == "__main__":</code> guard. Running via heredoc hangs with no network traffic — check <code>lsof -nP -iTCP</code> to confirm it is stuck in spawn rather than waiting on an API.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Node summaries average ~1,167 characters and dominate the tree — <strong>89% of its size</strong> on the AIA corpus.</td>
+    <td>Shorten summaries before blaming retrieval cost. Cutting them to ~300 characters took the same tree from ~113K tokens to ~35K, and from 9 pagination parts to 1–2.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><code>litellm.success_callback</code> does not fire on the <code>openai-agents</code> path.</td>
+    <td>To measure token usage you must wrap <code>litellm.acompletion</code> directly.</td>
+  </tr>
+</table>
+
+<h3>Where the time actually goes</h3>
+<p>Local I/O is not the bottleneck. Measured on this corpus: <code>tree.json</code> read and parse <strong>0.8 ms</strong>, <code>pages.json</code> <strong>1.8 ms</strong>, <code>get_page_content</code> for three pages <strong>3 ms</strong>. Everything else is LLM round trips — which is why the levers that matter are reasoning effort, summary length, and the number of pagination parts.</p>
+
+<h2 id="extensions">8. How this project extends it</h2>
+
+<p>This repository builds on upstream without editing a single file inside <code>PageIndex/</code>. Two extension points are used.</p>
+
+<h3>Extraction backend — <code>extractors/</code></h3>
+<p>Upstream reads the PDF text layer with PyPDF2. That is free but has two hard limits on financial reports: tables come out mangled, and image-only PDFs are refused outright.</p>
+
+<p><code>extractors/backend.py</code> resolves which extractor to use and, when Azure Document Intelligence is configured, takes over <code>LocalAPI._extract_page_texts</code> by monkeypatching. The method is a <code>staticmethod</code> returning one string per page, so a drop-in replacement is enough and upstream stays pristine.</p>
+
+<div class="key">
+  <strong>The extraction backend never switches silently.</strong> Every entry point prints which one it used and why. And when Azure is configured but a call fails, the run aborts rather than degrading to the text layer — a broken key would otherwise quietly change index quality.
+</div>
+
+<h3>Corpus navigation — <code>nav/</code></h3>
+<p>Upstream's tree models one document. <code>nav/</code> adds a level above it for corpora with deep directory structures and thousands of files:</p>
+
+<pre><code>question
+ ├─ level 1: walk the directory tree to pick candidate files
+ └─ level 2: walk each candidate's chapter tree to pick sections
+        ↓
+      section text + provenance</code></pre>
+
+<p>Both levels use the same principle as upstream: the model chooses, no similarity ranking. Where the corpus is large, the directory tree is still small enough to read whole, which keeps level 1 to two calls regardless of depth.</p>
+
+<h3>What stayed the same</h3>
+<p>Because both indexing engines emit the same tree, none of this required touching the tree builder or the retrieval loop. The extensions changed <em>where text comes from</em> and <em>how many documents are addressed</em> — not how a tree is shaped or traversed.</p>
+
+<footer>
+  <p>Generated from the vendored source at commit <code>71714e8</code> (pageindex 0.2.10, MIT). File paths, tool names and configuration keys in this document were read from that checkout, not from the published docs.</p>
+  <p>Related reading: <code>docs/HANDOVER.md</code> for project state and gotchas, <code>nav/README.md</code> for the two-level navigator, <code>PageIndex/UPSTREAM.md</code> for what was vendored and how to update it.</p>
+</footer>
+
+</div>
+</body>
+</html>
