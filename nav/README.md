@@ -16,7 +16,7 @@
 ## 快速开始
 
 ```bash
-PY=~/.workbuddy/binaries/python/envs/pageindex/bin/python
+PY=.venv/bin/python          # after: python3 -m venv .venv && source .venv/bin/activate
 
 # 1. 建结构索引 —— 免费、无 LLM，上千文件也是秒级
 $PY -m nav.build /path/to/reports --out index/

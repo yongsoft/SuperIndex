@@ -60,8 +60,8 @@ survive updates:
 The venv's `.pth` stores an **absolute path**, so a fresh clone must reinstall:
 
 ```bash
-~/.workbuddy/binaries/python/envs/pageindex/bin/pip install -r PageIndex/requirements.txt
-~/.workbuddy/binaries/python/envs/pageindex/bin/pip install -e PageIndex --no-deps
+pip install -r requirements.txt      # from the repo root; includes this file
+pip install -e PageIndex --no-deps
 ```
 
 The `--no-deps` is deliberate: installing straight from `pyproject.toml` makes

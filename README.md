@@ -154,22 +154,29 @@ cd SuperIndex
 #    are fetched separately (~27 MB, publicly downloadable).
 bash data/aia_reports/download.sh
 
-# 2. Environment
-python3 -m venv ~/.workbuddy/binaries/python/envs/pageindex
-PY=~/.workbuddy/binaries/python/envs/pageindex/bin/python
-$PY -m pip install -r PageIndex/requirements.txt
-$PY -m pip install -e PageIndex --no-deps
+# 2. Environment — Python 3.10 or newer
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt    # includes PageIndex's pinned set
+pip install -e PageIndex --no-deps
 
 # 3. Build a navigation index over a directory of documents.
 #    This step needs no LLM and no API key.
-$PY -m nav.build /path/to/your/corpus --out corpus_index
+python -m nav.build /path/to/your/corpus --out corpus_index
 
 # 4. Generate summaries so routing has something to reason over  [needs an LLM]
-$PY -m nav.build /path/to/your/corpus --out corpus_index --summarize-files
+python -m nav.build /path/to/your/corpus --out corpus_index --summarize-files
 
 # 5. Ask a question
-$PY -m nav.route corpus_index "What was the dividend per share in 2024?"
+python -m nav.route corpus_index "What was the dividend per share in 2024?"
 ```
+
+**Two install steps, on purpose.** `requirements.txt` pulls in the pinned set
+from `PageIndex/requirements.txt` (installing straight from upstream's
+`pyproject.toml` makes pip backtrack badly on its unpinned `litellm` /
+`openai-agents` ranges — the pinned file resolves in seconds). The package
+itself is then added with `--no-deps` because its dependencies are already
+satisfied.
 
 `nav.build` accepts **`.md`, `.markdown`, `.txt` and `.pdf`** and walks nested
 directories. It is incremental — unchanged files are skipped, so re-running after

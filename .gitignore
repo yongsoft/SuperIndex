@@ -25,6 +25,11 @@ data/aia_reports/*.pdf
 results/*
 !results/.gitkeep
 
+# ─── local development tooling ─────────────────────────────────────────────
+# Local development-tooling state. Not part of the library: it stays on disk
+# but out of the repository.
+.workbuddy-ai/
+
 # ─── python ────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -36,6 +41,7 @@ dist/
 .venv/
 venv/
 env/
+.python-version
 
 # ─── macOS ─────────────────────────────────────────────────────────────────
 .DS_Store

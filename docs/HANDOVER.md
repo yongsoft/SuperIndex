@@ -63,18 +63,26 @@ bash data/aia_reports/download.sh     # 唯一还需要单独获取的东西（1
 
 ### 3.1 Python 环境
 
-项目用一个**独立 venv**，路径不在项目目录内：
+用项目内的虚拟环境，Python 3.10+：
 
 ```bash
-# venv 位置（已存在）
-/Users/yong/.workbuddy/binaries/python/envs/pageindex
+cd SuperIndex
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt  # 含 PageIndex 的 pinned 依赖
+pip install -e PageIndex --no-deps
 ```
 
-后续命令统一用这个解释器。为方便，建议先设个别名：
+后续命令里的 `$PY` 都指这个解释器：
 
 ```bash
-PY=/Users/yong/.workbuddy/binaries/python/envs/pageindex/bin/python
+PY=.venv/bin/python              # 激活 venv 后直接用 python 也可以
 ```
+
+> 为什么分两步装：直接装 `PageIndex/pyproject.toml` 会让 pip 在未 pin 的
+> `litellm` / `openai-agents` 上疯狂回溯；`requirements.txt` 里引用的
+> `PageIndex/requirements.txt` 是 pin 过的，几秒解完，再用 `--no-deps`
+> 把包本身装进去。
 
 ### 3.2 PageIndex 的安装方式（重要）
 
@@ -111,8 +119,8 @@ $PY -m pip install -e PageIndex --no-deps
 editable 安装靠 `.pth` 重定向）：
 
 ```bash
-cat /Users/yong/.workbuddy/binaries/python/envs/pageindex/lib/python3.13/site-packages/*pageindex*.pth
-# 应输出: /Users/yong/WorkBuddy AI/2026-09-20-22-30-52/PageIndex
+cat .venv/lib/python3.*/site-packages/*pageindex*.pth
+# 应输出当前仓库里 PageIndex/ 的绝对路径
 ```
 
 ⚠️ 这个 `.pth` 里是**绝对路径**。换机器或换目录后需要重装：
@@ -532,8 +540,8 @@ PDF 解析用 `ProcessPoolExecutor(mp_context=spawn)`。因此：
 接手后按顺序跑一遍，确认环境没问题：
 
 ```bash
-cd "/Users/yong/WorkBuddy AI/2026-09-20-22-30-52"
-PY=/Users/yong/.workbuddy/binaries/python/envs/pageindex/bin/python
+cd SuperIndex
+PY=.venv/bin/python          # 或先 source .venv/bin/activate
 
 # 1. 确认 PageIndex 装好了（应打印 0.2.10 和仓库路径）
 $PY -c "import pageindex; print(pageindex.__version__ if hasattr(pageindex,'__version__') else 'ok')"
@@ -589,7 +597,6 @@ pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/webapp.lo
 | `.env` | ❌ 排除 | **含真实密钥** |
 | `__pycache__` / `.DS_Store` | ❌ 排除 | 缓存与垃圾 |
 | `samples/test_index/` | ✅ 包含（164 KB） | 虽是生成物，但让 `nav/` 能立刻演示 |
-| `.workbuddy-ai/` | ✅ 包含（48 KB） | 项目记忆，含大量决策记录 |
 
 ### 已完成 / 待办
 
