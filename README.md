@@ -16,22 +16,25 @@ The corpus is the five most recent **annual reports** plus the five matching
 
 | If you want to… | Read |
 |---|---|
-| **Understand how the system is architected** | **[`docs/ArchitectureIntro.html`](docs/ArchitectureIntro.html)** — layered diagram, both indexing engines, the retrieval loop, dependencies, storage model, and the five gotchas that cost an afternoon |
+| **Understand how the system is architected** | **[`docs/ArchitectureIntro.html`](docs/ArchitectureIntro.html)** — two parts: **Part I** the upstream engine (both indexing paths, the retrieval loop, dependencies, storage model, the five gotchas), **Part II** SuperIndex (why a layer above PageIndex was needed, three-level addressing, the two-level navigator, load-bearing decisions, and what it does not solve) |
 | Understand this project's state, decisions and what is unfinished | [`docs/HANDOVER.md`](docs/HANDOVER.md) |
 | Use or extend the two-level navigator | [`nav/README.md`](nav/README.md) |
 | Know what was vendored and how to update it | [`PageIndex/UPSTREAM.md`](PageIndex/UPSTREAM.md) |
 | See the Dify knowledge-base proposal | [`docs/dify-improvement-plan.md`](docs/dify-improvement-plan.md) |
 
 `ArchitectureIntro.html` is self-contained — open it directly in a browser, no
-server or network needed. All five diagrams are inline SVG and adapt to light
+server or network needed. All eight diagrams are inline SVG and adapt to light
 and dark mode. Every path, tool name and config key in it was read from the
 vendored checkout rather than from upstream's published docs.
 
 > The short version: PageIndex is **two indexing engines that emit the same
 > tree, plus one agentic retrieval loop**. There is no vector store and no
-> embedding model anywhere in its dependencies. Because both engines produce
-> the same node shape, the retrieval side is engine-agnostic — which is the
-> property this project's extensions rely on.
+> embedding model anywhere in its dependencies. SuperIndex adds **one level
+> above** it (a corpus tree, so the model can narrow from thousands of files to
+> a handful) and **one layer underneath** it (a pluggable extraction backend).
+> Because both engines produce the same node shape, the retrieval side is
+> engine-agnostic — which is what makes both extensions possible without
+> touching a line of `PageIndex/`.
 
 ---
 

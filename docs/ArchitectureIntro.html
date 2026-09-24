@@ -70,13 +70,13 @@ footer{margin-top:72px;padding-top:24px;border-top:1px solid var(--border);color
 <div class="wrap">
 
 <header>
-  <h1>PageIndex — Architecture</h1>
-  <p class="sub">How the engine is put together: two indexing engines, one agentic retrieval loop, and the storage model that connects them.</p>
-  <p class="meta">Pinned to upstream commit 71714e8 · v0.2.10 · MIT</p>
+  <h1>PageIndex &amp; SuperIndex — Architecture</h1>
+  <p class="sub">Part I covers the upstream engine: two indexing paths, one agentic retrieval loop, and the storage model. Part II covers SuperIndex, the layer this project adds on top to handle thousands of documents across deep directory trees.</p>
+  <p class="meta">PageIndex pinned to upstream commit 71714e8 · v0.2.10 · MIT</p>
 </header>
 
 <nav class="toc">
-  <h3>Contents</h3>
+  <h3>Part I — PageIndex (upstream engine)</h3>
   <ol>
     <li><a href="#summary">The one-sentence version</a></li>
     <li><a href="#layers">Layered architecture</a></li>
@@ -85,7 +85,15 @@ footer{margin-top:72px;padding-top:24px;border-top:1px solid var(--border);color
     <li><a href="#deps">External dependencies</a></li>
     <li><a href="#storage">Storage and the node model</a></li>
     <li><a href="#details">Implementation details worth knowing</a></li>
-    <li><a href="#extensions">How this project extends it</a></li>
+  </ol>
+  <h3 style="margin-top:18px">Part II — SuperIndex (this project)</h3>
+  <ol start="8">
+    <li><a href="#why">Why a layer above PageIndex was needed</a></li>
+    <li><a href="#compose">How SuperIndex composes with PageIndex</a></li>
+    <li><a href="#addressing">Three-level addressing and the index split</a></li>
+    <li><a href="#navigator">The two-level navigator</a></li>
+    <li><a href="#loadbearing">Design decisions that are load-bearing</a></li>
+    <li><a href="#limits">What SuperIndex does not solve</a></li>
   </ol>
 </nav>
 
@@ -466,36 +474,317 @@ if_add_node_text: "no"          # &lt;-- why the tree has no body text by defaul
 <h3>Where the time actually goes</h3>
 <p>Local I/O is not the bottleneck. Measured on this corpus: <code>tree.json</code> read and parse <strong>0.8 ms</strong>, <code>pages.json</code> <strong>1.8 ms</strong>, <code>get_page_content</code> for three pages <strong>3 ms</strong>. Everything else is LLM round trips — which is why the levers that matter are reasoning effort, summary length, and the number of pagination parts.</p>
 
-<h2 id="extensions">8. How this project extends it</h2>
+<h2 id="part2" style="margin-top:72px;padding-top:24px;border-top:2px solid var(--border)">Part II — SuperIndex</h2>
 
-<p>This repository builds on upstream without editing a single file inside <code>PageIndex/</code>. Two extension points are used.</p>
+<h2 id="why">8. Why a layer above PageIndex was needed</h2>
 
-<h3>Extraction backend — <code>extractors/</code></h3>
-<p>Upstream reads the PDF text layer with PyPDF2. That is free but has two hard limits on financial reports: tables come out mangled, and image-only PDFs are refused outright.</p>
+<p>PageIndex's tree models <strong>one document</strong>. That is the right unit for the question it was designed to answer — "where in this report is the figure?" — and it answers it well.</p>
 
-<p><code>extractors/backend.py</code> resolves which extractor to use and, when Azure Document Intelligence is configured, takes over <code>LocalAPI._extract_page_texts</code> by monkeypatching. The method is a <code>staticmethod</code> returning one string per page, so a drop-in replacement is enough and upstream stays pristine.</p>
+<p>But the real corpus is not one report. It is thousands of files spread across a directory tree several levels deep, and the first question a user asks is not "where in this report" but <strong>"which report?"</strong>. PageIndex's <code>browse_documents</code> tool lists documents, but listing is not navigating: hand a model 1,000 file names in one flat list and it is guessing.</p>
+
+<table>
+  <tr><th></th><th>PageIndex alone</th><th>The problem at corpus scale</th></tr>
+  <tr>
+    <td><strong>Unit of addressing</strong></td>
+    <td>One document, addressed by page range</td>
+    <td>Need to pick <em>which</em> document before any page range is meaningful</td>
+  </tr>
+  <tr>
+    <td><strong>Document discovery</strong></td>
+    <td><code>browse_documents</code> returns a flat list</td>
+    <td>A flat list of 1,000 names does not fit a prompt, and gives no basis for choosing</td>
+  </tr>
+  <tr>
+    <td><strong>Directory structure</strong></td>
+    <td>Not modelled — folders are a cloud-side grouping</td>
+    <td>The directory tree <em>is</em> the strongest routing signal available (year, entity, report type)</td>
+  </tr>
+  <tr>
+    <td><strong>Extraction</strong></td>
+    <td>PDF text layer via PyPDF2</td>
+    <td>Mangles tables; refuses scanned PDFs</td>
+  </tr>
+</table>
 
 <div class="key">
-  <strong>The extraction backend never switches silently.</strong> Every entry point prints which one it used and why. And when Azure is configured but a call fails, the run aborts rather than degrading to the text layer — a broken key would otherwise quietly change index quality.
+  <strong>SuperIndex adds one level above PageIndex and one layer underneath it.</strong> Above: a corpus tree so the model can narrow from thousands of files down to a handful. Underneath: a pluggable extraction backend so the text going into the tree is worth indexing.
 </div>
 
-<h3>Corpus navigation — <code>nav/</code></h3>
-<p>Upstream's tree models one document. <code>nav/</code> adds a level above it for corpora with deep directory structures and thousands of files:</p>
+<h2 id="compose">9. How SuperIndex composes with PageIndex</h2>
 
-<pre><code>question
- ├─ level 1: walk the directory tree to pick candidate files
- └─ level 2: walk each candidate's chapter tree to pick sections
-        ↓
-      section text + provenance</code></pre>
+<p>SuperIndex is a layer, not a fork. <strong>Not a single file inside <code>PageIndex/</code> is modified</strong> — everything is either a wrapper or a monkeypatch applied at runtime.</p>
 
-<p>Both levels use the same principle as upstream: the model chooses, no similarity ranking. Where the corpus is large, the directory tree is still small enough to read whole, which keeps level 1 to two calls regardless of depth.</p>
+<figure>
+<svg viewBox="0 0 680 360" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>How SuperIndex composes with PageIndex</title>
+  <desc>SuperIndex adds an application layer, an extraction backend and a corpus navigator above and below the unmodified PageIndex engine.</desc>
 
-<h3>What stayed the same</h3>
-<p>Because both indexing engines emit the same tree, none of this required touching the tree builder or the retrieval loop. The extensions changed <em>where text comes from</em> and <em>how many documents are addressed</em> — not how a tree is shaped or traversed.</p>
+  <rect x="40" y="20" width="600" height="46" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="43" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Application</text>
+  <rect x="160" y="26" width="228" height="34" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="274" y="43" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">webapp/ — chat UI (SSE)</text>
+  <rect x="400" y="26" width="228" height="34" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="514" y="43" font-size="12" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">scripts/ — CLI + diagnostics</text>
+
+  <rect x="40" y="84" width="600" height="74" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="52" y="108" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">Added by</text>
+  <text x="52" y="126" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">SuperIndex</text>
+  <rect x="160" y="96" width="148" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="234" y="113" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">extractors/</text>
+  <text x="234" y="130" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">where text comes from</text>
+  <rect x="318" y="96" width="148" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="392" y="113" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">nav/</text>
+  <text x="392" y="130" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">corpus → file → section</text>
+  <rect x="476" y="96" width="152" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="552" y="113" font-size="11" fill="var(--dg-blue-800)" text-anchor="middle" dominant-baseline="central">tests/ + docs/</text>
+  <text x="552" y="130" font-size="11" fill="var(--dg-blue-600)" text-anchor="middle" dominant-baseline="central">55 offline assertions</text>
+
+  <line x1="40" y1="174" x2="640" y2="174" stroke="var(--dg-amber-600)" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="340" y="174" font-size="11" fill="var(--dg-amber-800)" text-anchor="middle" dominant-baseline="central" style="paint-order:stroke;stroke:var(--bg);stroke-width:6px">PageIndex/ — vendored, never edited</text>
+
+  <rect x="40" y="190" width="600" height="74" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="214" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Upstream</text>
+  <text x="52" y="232" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">engine</text>
+  <rect x="160" y="202" width="148" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="234" y="219" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">flash / classic</text>
+  <text x="234" y="236" font-size="11" fill="var(--dg-gray-600)" text-anchor="middle" dominant-baseline="central">tree building</text>
+  <rect x="318" y="202" width="148" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="392" y="219" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">agent loop</text>
+  <text x="392" y="236" font-size="11" fill="var(--dg-gray-600)" text-anchor="middle" dominant-baseline="central">retrieval</text>
+  <rect x="476" y="202" width="152" height="50" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="552" y="219" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">4 read tools</text>
+  <text x="552" y="236" font-size="11" fill="var(--dg-gray-600)" text-anchor="middle" dominant-baseline="central">tree + pages</text>
+
+  <rect x="40" y="282" width="600" height="58" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="52" y="311" font-size="12" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">Storage</text>
+  <rect x="160" y="294" width="228" height="34" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="274" y="311" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">PageIndex store (tree + pages)</text>
+  <rect x="400" y="294" width="228" height="34" rx="8" fill="var(--dg-card)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="514" y="311" font-size="11" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">nav index (manifest + trees)</text>
+</svg>
+<figcaption>Figure 6 — SuperIndex adds a layer above (which file?) and underneath (where does text come from?). The engine in between is untouched.</figcaption>
+</figure>
+
+<h3>The two extension points, and why they are shaped that way</h3>
+
+<table>
+  <tr><th>Extension</th><th>Mechanism</th><th>Why not edit upstream</th></tr>
+  <tr>
+    <td><strong>Extraction backend</strong><br><code>extractors/backend.py</code></td>
+    <td>Monkeypatches <code>LocalAPI._extract_page_texts</code>. That method is a <code>staticmethod</code> returning one string per page, so a drop-in replacement is sufficient.</td>
+    <td>Upstream stays <code>git pull</code>-able, and the diff against it stays empty. Two runtime knobs (<code>SUMMARY_CONCURRENCY</code>, <code>reasoning_effort</code>) are applied the same way.</td>
+  </tr>
+  <tr>
+    <td><strong>Corpus navigator</strong><br><code>nav/</code></td>
+    <td>Sits entirely beside upstream. It builds its own index and never calls into <code>PageIndex/</code> for retrieval.</td>
+    <td>The navigator answers a different question (which file?) than upstream does (where in the file?). Keeping them separate means either can be replaced alone.</td>
+  </tr>
+</table>
+
+<p>The reason both are possible is the property noted in Part I: <strong>the indexing engines emit the same tree shape, so nothing downstream depends on how a tree was built.</strong> SuperIndex changes where text comes from and how many documents are addressed — not how a tree is shaped or traversed.</p>
+
+<h2 id="addressing">10. Three-level addressing and the index split</h2>
+
+<p>SuperIndex addresses a corpus at three levels. Each level has its own index file, sized so that the cheap level stays resident and the expensive one is fetched only when needed.</p>
+
+<figure>
+<svg viewBox="0 0 680 308" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Three-level addressing and the index split</title>
+  <desc>Corpus tree, document tree and section content are stored in separate files, from small and always loaded to large and on demand.</desc>
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="40" y="40" width="380" height="72" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="58" y="62" font-size="13" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">L0 · Corpus tree — which file?</text>
+  <text x="58" y="82" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">directories, each with a one-line summary</text>
+  <text x="58" y="100" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">manifest.json — 125 KB / 144 files</text>
+  <text x="440" y="76" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">always resident</text>
+
+  <line x1="230" y1="112" x2="230" y2="124" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <rect x="40" y="128" width="380" height="72" rx="12" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="58" y="150" font-size="13" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">L1 · Document tree — which section?</text>
+  <text x="58" y="170" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">chapters, with line or page ranges</text>
+  <text x="58" y="188" font-size="11" fill="var(--dg-blue-800)" font-family="var(--mono)" dominant-baseline="central">trees/&lt;key&gt;.json — one per document</text>
+  <text x="440" y="164" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">loaded on demand</text>
+
+  <line x1="230" y1="200" x2="230" y2="212" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a3)"/>
+
+  <rect x="40" y="216" width="380" height="72" rx="12" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="58" y="238" font-size="13" font-weight="500" fill="var(--dg-gray-800)" dominant-baseline="central">L2 · Section content — the text</text>
+  <text x="58" y="258" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">sliced by the node's start / end</text>
+  <text x="58" y="276" font-size="11" fill="var(--dg-gray-800)" font-family="var(--mono)" dominant-baseline="central">source lines or page text</text>
+  <text x="440" y="252" font-size="11" fill="var(--dg-gray-600)" dominant-baseline="central">no LLM — direct slice</text>
+</svg>
+<figcaption>Figure 7 — Each level is an index into the next. L0 is small enough to read whole; L1 and L2 are fetched per candidate.</figcaption>
+</figure>
+
+<h3>Measured on a 144-file / 229-directory corpus</h3>
+
+<table>
+  <tr><th>Quantity</th><th>Value</th><th>Why it matters</th></tr>
+  <tr><td>Structural index build (no LLM)</td><td><strong>0.09 s</strong></td><td>You can index a corpus before deciding whether it is worth summarising</td></tr>
+  <tr><td><code>manifest.json</code></td><td><strong>125 KB</strong></td><td>Small enough to hold in memory and re-read per query</td></tr>
+  <tr><td>Full directory tree listing</td><td><strong>8,904 characters</strong></td><td>≈2K tokens — fits one prompt, which is what makes level 1 cheap</td></tr>
+  <tr><td>Chapter nodes</td><td>2,304</td><td>Spread across per-document files, so never all loaded at once</td></tr>
+</table>
+
+<div class="key">
+  <strong>The load-bearing observation: the directory tree is far smaller than the file count.</strong> 144 files live in 229 directories — and directories are what level 1 reads. That is why level 1 can show the whole tree in a single call, and why its cost does not grow with directory depth.
+</div>
+
+<p>This mirrors upstream's own split (<code>tree.json</code> small and resident, <code>pages.json</code> large and on demand), extended one level up.</p>
+
+<h2 id="navigator">11. The two-level navigator</h2>
+
+<p>Retrieval walks the two levels in sequence. Every step is a model decision — there is no similarity ranking anywhere in it.</p>
+
+<figure>
+<svg viewBox="0 0 680 408" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>The two-level navigation flow</title>
+  <desc>The model picks directories from the corpus tree, then files, then sections, with a deterministic fallback at each step.</desc>
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="60" y="20" width="380" height="48" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="250" y="44" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Question</text>
+  <line x1="250" y1="68" x2="250" y2="84" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a4)"/>
+
+  <rect x="60" y="88" width="380" height="64" rx="10" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="76" y="110" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">L0 — read the whole directory tree</text>
+  <text x="76" y="130" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">model picks 1–4 directories</text>
+  <text x="456" y="120" font-size="11" fill="var(--dg-amber-800)" dominant-baseline="central">abstains → year + keyword match</text>
+  <line x1="250" y1="152" x2="250" y2="168" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a4)"/>
+
+  <rect x="60" y="172" width="380" height="64" rx="10" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="76" y="194" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">L1 — list files under those directories</text>
+  <text x="76" y="214" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">model picks 1–5 files</text>
+  <text x="456" y="204" font-size="11" fill="var(--dg-amber-800)" dominant-baseline="central">abstains → same fallback</text>
+  <line x1="250" y1="236" x2="250" y2="252" stroke="var(--dg-blue-600)" stroke-width="1.5" marker-end="url(#a4)"/>
+
+  <rect x="60" y="256" width="380" height="64" rx="10" fill="var(--dg-blue-50)" stroke="var(--dg-blue-600)" stroke-width="0.5"/>
+  <text x="76" y="278" font-size="12" font-weight="500" fill="var(--dg-blue-800)" dominant-baseline="central">L1 — read each candidate's chapter tree</text>
+  <text x="76" y="298" font-size="11" fill="var(--dg-blue-600)" dominant-baseline="central">model picks 1–6 sections</text>
+  <text x="456" y="288" font-size="11" fill="var(--dg-amber-800)" dominant-baseline="central">abstains → title token match</text>
+  <line x1="250" y1="320" x2="250" y2="336" stroke="var(--dg-gray-600)" stroke-width="1.5" marker-end="url(#a4)"/>
+
+  <rect x="60" y="340" width="380" height="48" rx="10" fill="var(--dg-gray-50)" stroke="var(--dg-gray-600)" stroke-width="0.5"/>
+  <text x="250" y="364" font-size="13" font-weight="500" fill="var(--dg-gray-800)" text-anchor="middle" dominant-baseline="central">Section text + provenance</text>
+</svg>
+<figcaption>Figure 8 — Three model decisions, each with a deterministic fallback. <code>--extractor</code> and <code>--max-files</code> tune the budgets.</figcaption>
+</figure>
+
+<h3>Why level 0 shows the entire tree instead of descending</h3>
+
+<p>The first implementation descended one directory level at a time. It was slower and less reliable, for a reason worth recording:</p>
+
+<table>
+  <tr><th></th><th>Level-by-level descent</th><th>Whole tree in one call</th></tr>
+  <tr><td>LLM calls</td><td>One per level, so it grows with depth</td><td>Two, regardless of depth</td></tr>
+  <tr><td>Model context</td><td>Sees one level at a time — cannot compare across branches</td><td>Sees the whole shape, including which branch is deeper</td></tr>
+  <tr><td>Failure mode</td><td>An early wrong turn is unrecoverable</td><td>A wrong branch is still visible in context</td></tr>
+</table>
+
+<p>Descent is still implemented and used as a fallback when the directory count exceeds a budget (240 by default) — but it is the exception, not the default path.</p>
+
+<h3>The extraction backend underneath</h3>
+
+<p>Level 0 answers <em>which file</em>. The extraction backend answers <em>what text goes into the tree in the first place</em> — and it matters more than it sounds, because a tree built from mangled text is wrong no matter how good the navigation is.</p>
+
+<table>
+  <tr><th></th><th>Text layer (default fallback)</th><th>Azure Document Intelligence</th></tr>
+  <tr><td>Cost</td><td>free</td><td>per page</td></tr>
+  <tr><td>Tables</td><td>mangled — a chart page flattens to <code>175230</code>, two numbers fused, label-to-value association gone</td><td>real Markdown tables</td></tr>
+  <tr><td>Scanned / image-only PDFs</td><td>refused outright</td><td>OCR'd</td></tr>
+  <tr><td>Page anchors</td><td>synthesised as <code>&lt;!-- page: N --&gt;</code></td><td>injected at real page boundaries, read from <code>analyzeResult.pages[].spans[].offset</code></td></tr>
+</table>
+
+<div class="note">
+  <strong>Configured means default.</strong> Set <code>AZURE_DI_ENDPOINT</code> and <code>AZURE_DI_KEY</code> in <code>.env</code> and every entry point takes it up automatically — no flag to remember. With nothing configured you get the text layer, exactly as before. The backend never switches silently: each run prints which one it used and why.
+</div>
+
+<div class="note">
+  <strong>A configured-but-failing backend aborts the run.</strong> Degrading quietly to the text layer would hide a wrong key or endpoint and change index quality without anyone noticing. <code>AZURE_DI_FALLBACK=1</code> opts into the soft behaviour.
+</div>
+
+<h2 id="loadbearing">12. Design decisions that are load-bearing</h2>
+
+<p>These were each arrived at by getting them wrong first. They are recorded here so they are not "tidied up" later.</p>
+
+<table>
+  <tr><th>Decision</th><th>Why</th></tr>
+  <tr>
+    <td><strong>Prompts say "select at least one", never "leave blank if nothing is relevant".</strong></td>
+    <td>The first version offered an escape hatch. The model took it unpredictably — the same question would navigate correctly on one run and abort on the next. Models default to caution; do not give them a reason to abstain. Relevance is better judged downstream.</td>
+  </tr>
+  <tr>
+    <td><strong>Year is the highest-weighted routing signal.</strong></td>
+    <td>Cross-period confusion is the dominant error in financial QA. Years appear in directory paths, so extracting them from the question serves double duty: a hint in the prompt and a scoring term in the fallback.</td>
+  </tr>
+  <tr>
+    <td><strong>Fallbacks resolve at the current level, not globally.</strong></td>
+    <td>Falling back to the whole corpus is a blunt instrument that gets worse as the corpus grows. If the model abstains at a level that already has candidate files, use those files — not all 144.</td>
+  </tr>
+  <tr>
+    <td><strong>The manifest and the trees are separate files.</strong></td>
+    <td>Routing must stay cheap. Keeping chapter trees out of the always-loaded file is what lets <code>manifest.json</code> stay at 125 KB for a corpus of 144 files.</td>
+  </tr>
+  <tr>
+    <td><strong>Extraction failures are loud.</strong></td>
+    <td>Silent degradation changes index quality without changing any observable behaviour — the worst kind of bug in a retrieval system.</td>
+  </tr>
+  <tr>
+    <td><strong>Nothing inside <code>PageIndex/</code> is edited.</strong></td>
+    <td>Keeps upstream <code>git pull</code>-able and the diff empty. All three runtime customisations (<code>_extract_page_texts</code>, <code>SUMMARY_CONCURRENCY</code>, <code>reasoning_effort</code>) are applied from outside.</td>
+  </tr>
+</table>
+
+<h2 id="limits">13. What SuperIndex does not solve</h2>
+
+<p>Worth being explicit about, because these are the questions a new owner will hit.</p>
+
+<table>
+  <tr><th>Limit</th><th>Detail</th></tr>
+  <tr>
+    <td><strong>Locating is not the same as computing.</strong></td>
+    <td>The navigator finds the right section. If the answer requires arithmetic across sections, the model still does it by reading text. Numbers ultimately need a structured path — see <code>docs/dify-improvement-plan.md</code> for the proposal.</td>
+  </tr>
+  <tr>
+    <td><strong>Chapter summaries need an LLM.</strong></td>
+    <td>A one-time cost per corpus. Without them, section selection degrades to token matching.</td>
+  </tr>
+  <tr>
+    <td><strong>PDFs depend on bookmarks or Azure DI.</strong></td>
+    <td>With neither, a PDF falls back to one node per page — coarse but navigable. It is never silently dropped.</td>
+  </tr>
+  <tr>
+    <td><strong>Directory quality sets the ceiling.</strong></td>
+    <td>If a corpus is thousands of files flattened into one directory, level 0 degrades to listing thousands of names. That is a corpus-organisation problem, not a navigator one.</td>
+  </tr>
+  <tr>
+    <td><strong>Fallbacks match tokens, not synonyms.</strong></td>
+    <td>Asking about "life insurance" will not match a directory named "人身险". Swapping in an embedding pre-filter would fix it — at the cost of reintroducing the similarity problem the whole design avoids.</td>
+  </tr>
+  <tr>
+    <td><strong>Validated on synthetic corpora, not production ones.</strong></td>
+    <td>16-file and 144-file corpora with a known structure. The scale numbers above are real; the routing accuracy on a messy real corpus is not yet measured.</td>
+  </tr>
+</table>
+
+<div class="key">
+  <strong>The honest summary.</strong> SuperIndex makes the <em>which file, which section</em> problem cheap and traceable at corpus scale. It does not make numeric answers exact, and it has not been tested against a genuinely messy production corpus. Both are known and recorded rather than papered over.
+</div>
 
 <footer>
-  <p>Generated from the vendored source at commit <code>71714e8</code> (pageindex 0.2.10, MIT). File paths, tool names and configuration keys in this document were read from that checkout, not from the published docs.</p>
-  <p>Related reading: <code>docs/HANDOVER.md</code> for project state and gotchas, <code>nav/README.md</code> for the two-level navigator, <code>PageIndex/UPSTREAM.md</code> for what was vendored and how to update it.</p>
+  <p><strong>Part I</strong> was written from the vendored source at commit <code>71714e8</code> (pageindex 0.2.10, MIT). File paths, tool names and configuration keys were read from that checkout, not from the published docs.</p>
+  <p><strong>Part II</strong> describes this repository's own additions. The measured figures (index size, build time, listing length) come from running <code>nav.build</code> over the 16-file and 144-file test corpora under <code>samples/</code> and <code>/tmp</code>.</p>
+  <p>Related reading: <code>nav/README.md</code> for the navigator's full API and limitations, <code>docs/HANDOVER.md</code> for project state and the five gotchas, <code>PageIndex/UPSTREAM.md</code> for what was vendored and how to update it, <code>docs/dify-improvement-plan.md</code> for the structured-table proposal.</p>
 </footer>
 
 </div>
