@@ -51,7 +51,7 @@ bash data/aia_reports/download.sh     # 唯一还需要单独获取的东西（1
 - **10 份 AIA 报告只索引了 3 份**（1H2021 / FY2021 / FY2022），
   其余 7 份未索引。原因见第五节「为什么中途停了」。
 - **Azure DI 抽取器没有用真实 Azure 凭据端到端验证过** —— 它是「配了就默认生效」
-  的路径（见 5.6），离线逻辑有 55 条断言覆盖，但真实调用需接手人配 key 后跑一次
+  的路径（见 5.6），离线逻辑有 53 条断言覆盖（下载样例 PDF 后为 55 条），但真实调用需接手人配 key 后跑一次
   `--check --only FY2021`。
 - **`nav/` 只用合成语料验证过**，未在真实公司语料上跑过。
 - **Dify 方案只有设计文档，未落地**。
@@ -560,7 +560,7 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（55 条断言，不联网，约 2 秒）
+# 5. 跑离线测试（53 条断言，不联网，约 2 秒；下载样例 PDF 后为 55 条）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
 $PY -u tests/test_backend.py      # 27 条：后端解析/按页切分/PageIndex 接管
 

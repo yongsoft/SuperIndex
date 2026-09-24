@@ -110,13 +110,17 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**55 assertions** across the extraction and navigation layers, with no network
+**53 assertions** across the extraction and navigation layers, with no network
 and no credentials required:
 
 ```bash
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
-python tests/test_backend.py     # 27 assertions — backend resolution, page splitting
+python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
 ```
+
+`test_backend.py` reports 27 once the sample PDFs are present; without them the
+two PDF-dependent assertions skip rather than fail, so the suite is runnable on a
+bare clone.
 
 ---
 
