@@ -1,443 +1,276 @@
-# PageIndex × AIA Reports — Local Test Bench
+# SuperIndex
 
-A local test harness for [PageIndex](https://github.com/VectifyAI/PageIndex)
-(VectifyAI's vectorless, reasoning-based RAG engine) using **AIA Group's
-financial reports as the corpus**. PageIndex is designed exactly for documents
-like these: long, table-heavy financial reports where vector similarity search
-tends to retrieve the wrong page.
+**Structure-navigation retrieval for large document corpora — built on [PageIndex](https://github.com/VectifyAI/PageIndex).**
 
-The corpus is the five most recent **annual reports** plus the five matching
-**interim reports**, taken from AIA's
-[results & presentations archive](https://www.aia.com/en/investor-relations/overview/results-presentations).
+PageIndex answers *"where in this report is the figure?"*. SuperIndex answers the
+question that comes first: **"which report?"** — across thousands of files spread
+over a deep directory tree, with no vector store and no embedding model anywhere
+in the stack.
 
 ---
 
-## Start here
+## The problem
 
-| If you want to… | Read |
+Vector RAG retrieves passages that are *similar* to the question. On financial
+and regulatory documents that is frequently the wrong passage. Two years'
+dividend notes differ by a single digit, so their embeddings are nearly
+identical — and when we measured it on a real corpus, **57% of chunks had a
+near-duplicate in another document**, some of them character-for-character
+identical. No embedding model can separate those, because the input is the same.
+
+PageIndex takes a different route: it builds an explicit tree over a document and
+has the model *reason* about which node to open. Answers trace back to a page
+number instead of a cosine score.
+
+That solves it for **one** document. But a real corpus is not one document. It is
+thousands of files, organised in directories several levels deep, and the first
+question a user asks is which file to look in at all. Hand a model a flat list of
+1,000 filenames and it is guessing.
+
+**SuperIndex adds the missing level.**
+
+---
+
+## What you get
+
+### Navigate a corpus, not a document
+
+A three-level addressing model — **corpus → document → section** — where each
+level is a separate index sized so the cheap one stays resident and the expensive
+one is fetched on demand.
+
+```
+question
+ ├─ L0  which file?      read the whole directory tree, model picks 1–4 directories
+ ├─ L1  which file?      list files under those, model picks 1–5
+ └─ L2  which section?   read each candidate's chapter tree, model picks 1–6
+        ↓
+      section text + provenance
+```
+
+Three model decisions, each with a deterministic fallback. **Cost does not grow
+with directory depth**, because the directory tree is far smaller than the file
+count — 144 files lived in 229 directories in our test corpus, and the whole
+directory listing fits in one prompt at ~2K tokens.
+
+### Scales cheaply, and you can measure it before spending
+
+Structural indexing needs **no LLM and no API key**.
+
+| | |
 |---|---|
-| **Understand how the system is architected** | **[`docs/ArchitectureIntro.html`](docs/ArchitectureIntro.html)** — two parts: **Part I** the upstream engine (both indexing paths, the retrieval loop, dependencies, storage model, the five gotchas), **Part II** SuperIndex (why a layer above PageIndex was needed, three-level addressing, the two-level navigator, load-bearing decisions, and what it does not solve) |
-| Understand this project's state, decisions and what is unfinished | [`docs/HANDOVER.md`](docs/HANDOVER.md) |
-| Use or extend the two-level navigator | [`nav/README.md`](nav/README.md) |
-| Know what was vendored and how to update it | [`PageIndex/UPSTREAM.md`](PageIndex/UPSTREAM.md) |
-| See the Dify knowledge-base proposal | [`docs/dify-improvement-plan.md`](docs/dify-improvement-plan.md) |
+| Structural index build | **0.09 s** for 144 files / 2,304 chapter nodes |
+| Routing index size | **125 KB** — small enough to hold in memory and re-read per query |
+| Full directory-tree listing | **8,904 characters** (~2K tokens) |
 
-`ArchitectureIntro.html` is self-contained — open it directly in a browser, no
-server or network needed. All eight diagrams are inline SVG and adapt to light
-and dark mode. Every path, tool name and config key in it was read from the
-vendored checkout rather than from upstream's published docs.
+You can index an entire corpus, inspect the structure, and decide whether it is
+worth summarising — before paying for anything.
 
-> The short version: PageIndex is **two indexing engines that emit the same
-> tree, plus one agentic retrieval loop**. There is no vector store and no
-> embedding model anywhere in its dependencies. SuperIndex adds **one level
-> above** it (a corpus tree, so the model can narrow from thousands of files to
-> a handful) and **one layer underneath** it (a pluggable extraction backend).
-> Because both engines produce the same node shape, the retrieval side is
-> engine-agnostic — which is what makes both extensions possible without
-> touching a line of `PageIndex/`.
+### Better text in, better answers out
 
----
+Upstream reads the PDF text layer with PyPDF2. On table-heavy documents that
+falls apart: a bar-chart page flattens to `175230`, two numbers fused, with the
+label-to-value association gone. Scanned PDFs are refused outright.
 
-## Corpus — 2,640 pages across 10 documents
+SuperIndex makes extraction **pluggable**, with **Azure Document Intelligence as
+the default whenever it is configured**:
 
-### Annual reports
-
-| Report | Period | Pages | Tree nodes | Depth | TOC source |
-|---|---|---:|---:|---:|---|
-| `AIA_Annual_Report_FY2021.pdf` | FY2021 | 304 | 488 | 6 | bookmarks |
-| `AIA_Annual_Report_FY2022.pdf` | FY2022 | 312 | 469 | 5 | bookmarks |
-| `AIA_Annual_Report_FY2023.pdf` | FY2023 | 376 | 639 | 6 | bookmarks |
-| `AIA_Annual_Report_FY2024.pdf` | FY2024 | 371 | 597 | 6 | bookmarks |
-| `AIA_Annual_Report_FY2025.pdf` | FY2025 | 363 | 549 | 5 | bookmarks |
-| **subtotal** | | **1,726** | **2,742** | | |
-
-### Interim reports
-
-| Report | Period | Pages | Tree nodes | Depth | TOC source |
-|---|---|---:|---:|---:|---|
-| `AIA_Interim_Report_1H2021.pdf` | 1H2021 | 150 | 254 | 5 | bookmarks |
-| `AIA_Interim_Report_1H2022.pdf` | 1H2022 | 154 | 245 | 6 | bookmarks |
-| `AIA_Interim_Report_1H2023.pdf` | 1H2023 | 230 | 333 | 5 | bookmarks |
-| `AIA_Interim_Report_1H2024.pdf` | 1H2024 | 190 | 309 | 5 | bookmarks |
-| `AIA_Interim_Report_1H2025.pdf` | 1H2025 | 190 | 299 | 5 | bookmarks |
-| **subtotal** | | **914** | **1,440** | | |
-
-**Total: 2,640 pages, 4,182 tree nodes.**
-
-Every document carries a text layer and a proper embedded outline, so PageIndex
-resolves the hierarchy from the bookmarks (`toc_source: "bookmarks"`) rather
-than inferring it from layout statistics. That is the best case for this
-engine, and it means no OCR is required. The 1H2023 report is sourced from
-HKEX rather than AIA's own site, as AIA's archive links it there.
-
----
-
-## Layout
-
-```
-.
-├── PageIndex/                  # the cloned upstream repo (editable install)
-├── data/aia_reports/           # the 10 source PDFs
-├── scripts/
-│   ├── 01_build_trees.py       # stage 1 — offline tree build (no LLM)
-│   ├── 02_qa_test.py           # stage 2 — index + retrieval QA (needs LLM key)
-│   ├── extract_text.py         # ground-truth helper (pypdfium2)
-│   ├── monitor.sh              # progress logger for long runs
-│   ├── questions.json          # 20 questions — full 10-report corpus
-│   └── questions_3docs.json    # 18 questions — scoped to the 3 indexed reports
-├── webapp/
-│   ├── server.py               # chat server (stdlib only, streaming SSE)
-│   └── static/index.html       # the chat UI
-├── results/
-│   ├── trees/                  # stage-1 output: one <doc>_structure.json each
-│   └── pageindex_store/        # stage-2 output: the client's local doc store
-└── .env.example                # provider configuration template
-```
-
----
-
-## Web chat UI
-
-A live query interface over whatever is currently indexed.
-
-```bash
-~/.workbuddy/binaries/python/envs/pageindex/bin/python webapp/server.py
-# -> http://127.0.0.1:8787
-```
-
-No extra dependencies — it is Python's stdlib `http.server` plus a single
-static HTML file.
-
-What it does:
-
-- **Document scope picker** — tick which reports a question may draw on; the
-  list refreshes every 20 s, so reports still being indexed appear as
-  "索引中" and become selectable as soon as they finish.
-- **Streaming answers** — the answer is streamed token by token over SSE, so
-  you watch it being written rather than waiting on a spinner.
-- **Retrieval trace** — each answer carries a collapsible panel showing the
-  model's *thinking* and every tool call it made. This is the interesting
-  part: you can see it call `get_document_structure` to read the tree, then
-  `get_page_content` on a specific page range, before it answers. That is the
-  traceability PageIndex claims over vector RAG, made visible.
-- **Suggested questions** — a few of the verified test questions, one click away.
-
-### API
-
-| Method | Path | Body / notes |
+| | text layer | Azure Document Intelligence |
 |---|---|---|
-| `GET` | `/` | the chat UI |
-| `GET` | `/api/status` | indexed docs, pending docs, model names |
-| `POST` | `/api/ask` | `{"question": str, "doc_ids": [...]}` → `text/event-stream` |
+| Tables | mangled | **real Markdown tables** |
+| Scanned / image-only | refused | **OCR'd** |
+| Page anchors | synthesised | injected at real page boundaries |
 
-SSE event names: `answer` (delta), `thinking` (delta), `tool_call`
-(`name`, `arguments`), `tool_result` (`name`, `output`), `error`, `done`.
+Set two environment variables and every entry point takes it up automatically —
+no flag to remember. With nothing configured you get the text layer, exactly as
+before. **The backend never switches silently**, and a configured-but-failing
+backend aborts rather than quietly degrading index quality.
 
-Chat runs are serialized server-side, so two tabs cannot interleave runs on
-the same PageIndex client.
+### Upstream stays pristine
 
----
+SuperIndex is a **layer, not a fork**. Not one file inside `PageIndex/` is
+modified — the engine is vendored at a pinned commit, and every customisation is
+applied from outside at runtime. `git pull` inside `PageIndex/` stays clean.
 
-## How PageIndex works here
+### No vectors, anywhere
 
-Two independent halves, and only the second one costs money:
+No vector store, no embedding model, not even `numpy` in the dependency list.
+Every answer is traceable to a file and a page.
 
-1. **Index** — build a hierarchical *tree* instead of a vector index.
-   `page_index_flash()` derives the skeleton from the PDF layout/bookmarks
-   with **no LLM at all**; an LLM is then used only to write a short summary
-   for each node and to refine the tree for search cost.
-2. **Retrieve** — the chat model *reasons* over that tree, deciding which
-   nodes to open, rather than matching embeddings. That is what makes the
-   result traceable to a page instead of "vibe retrieval".
+### Diagnostics included
 
-Because step 1's skeleton is LLM-free, the whole corpus can be parsed and its
-structure inspected offline before spending anything.
+Retrieval quality problems are usually measurable before they are fixable:
 
----
+| Tool | Answers |
+|---|---|
+| `scripts/04_md_audit.py` | Will this Markdown index well? Predicts the tree **without running an LLM** |
+| `scripts/05_similarity_probe.py` | How much cross-document duplication is polluting retrieval? |
+| `scripts/profile_query.py` | Where is the latency actually going? |
+| `scripts/03_md_tree_probe.py` | What tree will a given Markdown file produce? |
 
-## Two ways to get text out of a PDF
+### Tested offline
 
-**Azure Document Intelligence becomes the default extractor as soon as
-`AZURE_DI_ENDPOINT` and `AZURE_DI_KEY` are set in `.env`.** Every entry point
-takes it up automatically — `scripts/02_qa_test.py` (PageIndex indexing) and
-`nav/build.py` (the two-level navigator) both print which extractor they used
-at startup. With nothing configured you get the built-in text layer, exactly as
-before.
-
-The fallback reads the PDF's own **text layer** with PyPDF2. That is free and
-works well on running prose, but it has two hard limits on financial reports:
-
-| | text layer | Azure Document Intelligence (default when configured) |
-|---|---|---|
-| Cost | free | per page |
-| Tables | **mangled** — a bar-chart page comes out as `175230`, two numbers fused, label-to-value association gone | real Markdown tables |
-| Scanned / image-only PDFs | **refused outright** (no text layer, no OCR) | OCR'd |
-| Running prose | good | good |
-| Page anchors | native (page ranges) | injected as `<!-- page: N -->` |
-
-Both land in the same place — Markdown with `#` headings — so `nav.build` and
-PageIndex's Markdown path consume either without changes.
-
-**Normally you don't invoke the extractor at all** — configure `.env` and run
-the pipeline as usual:
+**55 assertions** across the extraction and navigation layers, with no network
+and no credentials required:
 
 ```bash
-# 1. check the config (and analyse page 1 of one PDF as a cheap smoke test)
-python scripts/06_azure_extract.py data/aia_reports --check --only FY2021
-
-# 2. build the two-level index straight over the PDFs — Azure DI is picked up
-#    automatically, no extra flag needed
-python -m nav.build data/aia_reports --out corpus_index --summarize-files
-
-# 3. or run the PageIndex QA pipeline, which takes it up the same way
-python scripts/02_qa_test.py --docs FY2021
+python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
+python tests/test_backend.py     # 27 assertions — backend resolution, page splitting
 ```
 
-`06_azure_extract.py` exists for the case where you want the Markdown **on disk
-as an artefact** (to inspect it, diff it, or feed it to something else):
+---
 
-```bash
-python scripts/06_azure_extract.py data/aia_reports --out corpus_md
-python -m nav.build corpus_md --out corpus_index --summarize-files
+## How it fits together
+
+```
+        ┌──────────────────────────────────────────────┐
+        │  Application    webapp/ chat UI · scripts/   │
+        ├──────────────────────────────────────────────┤
+        │  ADDED BY       extractors/   nav/           │
+        │  SUPERINDEX     where text    corpus→file    │
+        │                 comes from    →section       │
+        ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤
+        │  UPSTREAM       flash/classic  agent loop    │
+        │  (unmodified)   tree building  4 tools       │
+        ├──────────────────────────────────────────────┤
+        │  Storage        PageIndex store · nav index  │
+        └──────────────────────────────────────────────┘
 ```
 
-Both entry points accept `--extractor {auto,azure-di,text-layer}` to force a
-backend — useful for measuring what Azure DI actually buys you on your corpus.
-
-If a configured Azure call fails, the run **aborts** rather than silently
-degrading to the text layer (a broken key would otherwise quietly change index
-quality). Set `AZURE_DI_FALLBACK=1` to opt into the soft behaviour.
-
-Configuration lives in `.env` (see the Azure section in `.env.example`) —
-endpoint, key, model, output format, features. The page anchors are injected by
-reading `analyzeResult.pages[].spans[].offset` and splicing a marker at each
-page boundary, which is why `AZURE_DI_STRING_INDEX_TYPE` must stay
-`unicodeCodePoint` (it keeps offsets aligned with Python string indices).
-
-`extractors/azure_di.py` is plain REST over httpx — no Azure SDK dependency.
-`extractors/backend.py` decides which extractor is active and takes over
-PageIndex's `LocalAPI._extract_page_texts` when Azure is configured, so nothing
-inside `PageIndex/` is ever edited. Offline tests:
-`tests/test_azure_di.py` (28 assertions) and `tests/test_backend.py` (27).
+**[`docs/ArchitectureIntro.html`](docs/ArchitectureIntro.html) has the full
+picture** — 8 diagrams covering both the upstream engine and SuperIndex, the
+storage model, and the design decisions that turned out to be load-bearing.
+It is self-contained: open it in a browser, no server needed.
 
 ---
 
-## Running it
-
-### 0. Get the source PDFs
-
-The engine is **vendored** — `PageIndex/` ships with this repo, pinned to
-upstream commit `71714e8`, so a plain `git clone` gives you a runnable tree.
-(Provenance, what was stripped, and how to update: `PageIndex/UPSTREAM.md`.)
-
-The only thing not committed is the source PDFs (~27 MB, publicly downloadable):
+## Quick start
 
 ```bash
+git clone https://github.com/yongsoft/SuperIndex.git
+cd SuperIndex
+
+# 1. PageIndex is vendored, so one clone is enough. Only the sample PDFs
+#    are fetched separately (~27 MB, publicly downloadable).
 bash data/aia_reports/download.sh
-```
 
-> `PageIndex/` is vendored rather than added as a submodule so that one clone
-> is enough — no `--recursive`, no missing-directory surprises. All of this
-> project's own code lives in `scripts/`, `webapp/` and `nav/`; nothing in
-> `PageIndex/` is ever modified, which keeps the upstream diff clean.
-
-### 1. Environment
-
-```bash
+# 2. Environment
 python3 -m venv ~/.workbuddy/binaries/python/envs/pageindex
-~/.workbuddy/binaries/python/envs/pageindex/bin/pip install -r PageIndex/requirements.txt
-~/.workbuddy/binaries/python/envs/pageindex/bin/pip install -e PageIndex --no-deps
+PY=~/.workbuddy/binaries/python/envs/pageindex/bin/python
+$PY -m pip install -r PageIndex/requirements.txt
+$PY -m pip install -e PageIndex --no-deps
+
+# 3. Build a navigation index over a directory of documents.
+#    This step needs no LLM and no API key.
+$PY -m nav.build /path/to/your/corpus --out corpus_index
+
+# 4. Generate summaries so routing has something to reason over  [needs an LLM]
+$PY -m nav.build /path/to/your/corpus --out corpus_index --summarize-files
+
+# 5. Ask a question
+$PY -m nav.route corpus_index "What was the dividend per share in 2024?"
 ```
 
-> Note: installing straight from `pyproject.toml` makes pip backtrack badly on
-> the unpinned `litellm`/`openai-agents` ranges. The repo's pinned
-> `requirements.txt` resolves in seconds, so it is installed first and the
-> package itself added with `--no-deps`.
+`nav.build` accepts **`.md`, `.markdown`, `.txt` and `.pdf`** and walks nested
+directories. It is incremental — unchanged files are skipped, so re-running after
+adding a few documents is cheap.
 
-Optional — only needed by `scripts/05_similarity_probe.py`, which downloads a
-small ONNX embedding model:
+### Configuration
 
-```bash
-~/.workbuddy/binaries/python/envs/pageindex/bin/pip install fastembed
-export HF_ENDPOINT=https://hf-mirror.com      # huggingface.co is unreachable from CN
-```
+Copy `.env.example` to `.env`. It documents every knob, including the optional
+Azure Document Intelligence section. The only required value for the offline
+path is nothing at all; for summarisation and QA you need one LLM provider key.
 
-### 2. Stage 1 — offline tree build (no API key, ~45 s total)
+### Options worth knowing
 
-```bash
-~/.workbuddy/binaries/python/envs/pageindex/bin/python scripts/01_build_trees.py
-```
-
-Writes `results/trees/<doc>_structure.json` plus a `manifest.json`.
-
-### 3. Stage 2 — retrieval QA (needs an LLM key)
-
-```bash
-cp .env.example .env      # then put your key in it
-~/.workbuddy/binaries/python/envs/pageindex/bin/python scripts/02_qa_test.py
-```
-
-Useful flags:
-
-```bash
---index-model gpt-5-mini          # model for summaries (cheap is fine)
---chat-model  gpt-5               # model that answers (use a strong one)
---base-url    https://...         # OpenAI-compatible gateway
---skip-index                      # reuse the existing local store
---force-index                     # re-index from scratch
---only Q05 Q20                    # run a subset of questions
-```
-
-Results land in `results/qa_results.json`.
+| Flag | Effect |
+|---|---|
+| `--extractor {auto,azure-di,text-layer}` | Force a backend, to measure what Azure DI actually buys on your corpus |
+| `--summarize-files` / `--summarize-chapters` | Generate routing summaries (incremental, LLM-backed) |
+| `--max-files N` | Limit scope while evaluating |
+| `--json` (on `nav.route`) | Machine-readable output: selected files, sections, line ranges |
 
 ---
 
-## Current corpus state
+## Try it on the sample corpus
 
-Indexing was stopped deliberately part-way, so only **3 of the 10** reports carry a
-full retrieval index. The offline structural trees exist for all 10, but only these
-three can answer questions:
-
-| Indexed report | Pages |
-|---|---:|
-| `AIA_Interim_Report_1H2021.pdf` | 150 |
-| `AIA_Annual_Report_FY2021.pdf` | 304 |
-| `AIA_Annual_Report_FY2022.pdf` | 312 |
-
-Indexing is keyed on document name and reuses what is already stored, so resuming
-picks up from where it stopped:
+The repository ships a **16-file synthetic corpus** with a realistic three-level
+directory structure, plus a pre-built index, so you can see the navigator work
+before touching your own data:
 
 ```bash
-nohup ~/.workbuddy/binaries/python/envs/pageindex/bin/python -u \
-  scripts/02_qa_test.py --concurrency 8 > results/qa_run.log 2>&1 &
+$PY -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 ```
 
----
-
-## Test question sets
-
-Two sets, both with **independently verified** expected answers (ground truth read
-straight from the PDF text layer, never from PageIndex itself):
-
-| File | Scope | Questions |
-|---|---|---:|
-| `scripts/questions_3docs.json` | the 3 currently indexed reports | 18 |
-| `scripts/questions.json` | the full 10-report corpus | 20 |
-
-Run either set with `--questions`:
-
-```bash
-# the set that matches what is actually indexed right now
-~/.workbuddy/binaries/python/envs/pageindex/bin/python scripts/02_qa_test.py \
-    --skip-index --questions questions_3docs.json --out qa_results_3docs.json
-
-# a quick subset
-... --questions questions_3docs.json --only A01 A05 A17
+```
+  [目录] 全树 28 个 → 选 1 个
+      友邦保险/2024/annual/
+  [文件] 1 个候选 → 选 1 个
+      友邦保险/2024/annual/AIA_AR2024.md
+  [章节] AIA_AR2024.md (15 节点) → 股息, 主席报告
 ```
 
-### `questions_3docs.json` — the 18-question set
-
-**Interim 1H2021**
-
-| ID | Fact | Expected |
-|---|---|---|
-| A01 | Interim dividend per share | 38.00 HK cents, +8.6% |
-| A02 | VONB for 1H2021 | US$1,814m, +22% |
-| A03 | ANP / VONB margin / OPAT | US$3,060m (+13%) / 59.0% (+4.2pps) / US$3,182m (+5%) |
-| A04 | Free surplus and EV Equity | US$17.9bn (+US$4.4bn) / US$70.1bn (+5%) |
-
-**Annual FY2021**
-
-| ID | Fact | Expected |
-|---|---|---|
-| A05 | Total dividend per share | 146.00 HK cents = final 108.00 (+8%) + interim 38.00 |
-| A06 | VONB / OPAT / UFSG | US$3,366m (+18%) / US$6,409m (+6%) / US$6,451m (+8%) |
-| A07 | EV Equity and LCSM ratio | US$75.0bn new high; LCSM 399% |
-| A08 | Group CFO | Mr. Garth Jones |
-| A09 | Partnership distribution VONB | US$695m; VONB margin 39.1% |
-| A10 | MDRT ranking | No.1 globally, 7 consecutive years |
-
-**Annual FY2022**
-
-| ID | Fact | Expected |
-|---|---|---|
-| A11 | Total and final dividend per share | 153.68 HK cents (+5.3%); final 113.40 (+5%) |
-| A12 | VONB and 2H trend | US$3,092m, −5% for the year but +6% in 2H |
-| A13 | EV and EV Equity | EV US$74,694m (+5%); EV Equity US$77,031m (+6%) |
-| A14 | Share buy-back programme | three-year, US$10.0bn |
-| A15 | LCSM cover ratio | 283%, on the PCR basis |
-| A16 | MDRT ranking | 8 consecutive years |
-
-**Cross-document**
-
-| ID | Fact | Expected |
-|---|---|---|
-| A17 | FY2021 vs FY2022 VONB and dividend | VONB down (3,366 → 3,092, −5% CER) while dividend rose (146.00 → 153.68, +5.3%) |
-| A18 | 2021 interim + final = total | 38.00 + 108.00 = 146.00 HK cents |
+Separately, the project uses **AIA Group's published annual and interim reports**
+as a real-world PDF sample — long, table-heavy, and full of the cross-year
+duplication that breaks similarity search. Ten reports, 2,640 pages, downloaded
+by the script above. They are there to exercise the PDF path and to give the
+diagnostics something real to measure; nothing in the code is specific to AIA.
 
 ---
 
-## The full-corpus set (`questions.json`)
+## When to use this
 
-20 questions spanning all five annual reports and all five interim reports,
-covering dividend series across five years, segment VONB, officers, and a
-five-year CAGR calculation. See the file itself for the full table; it becomes
-usable once all 10 reports are indexed.
+**Good fit**
 
----
+- Thousands of documents in a nested directory structure
+- Answers must be traceable to a source and a page
+- Documents where near-duplicate text across versions is common (reports,
+  filings, contracts, standards)
+- Table-heavy or scanned PDFs, where you can enable Azure DI
+- You want to index a corpus before committing to a per-page extraction bill
 
-Both sets follow the same rules: expected answers were read from the PDF text
-layer with `scripts/extract_text.py` (pypdfium2), **never** from PageIndex
-itself, so the tests are not circular. They mix four question shapes:
+**Poor fit**
 
-- **needle lookups** — a single labelled figure on a specific page
-- **reasoning lookups** — a figure plus its driver (growth *and* the resulting margin)
-- **entity lookups** — officers named in the governance section
-- **cross-document work** — aggregation across reports (Q12/Q19 ask for the
-  five-year dividend series and CAGR; Q20 and A18 split a year's total dividend
-  into interim and final, which needs two documents)
-
-### Full-corpus ground truth
-
-**Annual reports**
-
-| ID | Fact | Expected |
-|---|---|---|
-| Q01 | FY2025 total dividend per share | 193.08 HK cents, +10% |
-| Q02 | FY2025 final dividend per share | 144.08 HK cents |
-| Q03 | FY2025 share buy-back programme | US$1.7bn (US$0.7bn payout ratio + US$1.0bn regular return) |
-| Q04 | Group CEO & CFO | Lee Yuan Siong; Garth Jones |
-| Q05 | AIA Hong Kong VONB 2025 | +28%; VONB margin 68.5% (+3.0pps) |
-| Q06 | Other Markets VONB 2025 | US$485m, +7% |
-| Q07 | FY2024 total dividend per share | 175.48 HK cents, +9% |
-| Q08 | FY2024 final dividend per share | 130.98 HK cents, +10% |
-| Q09 | FY2023 total dividend per share | 161.36 HK cents |
-| Q10 | FY2022 total dividend per share | 153.68 HK cents, +5.3% |
-| Q11 | FY2021 total dividend per share | 146.00 HK cents |
-| Q12 | 5-year annual dividend series + CAGR | 146.00 → 153.68 → 161.36 → 175.48 → 193.08; ≈7.2% CAGR |
-
-**Interim reports**
-
-| ID | Fact | Expected |
-|---|---|---|
-| Q13 | 1H2025 interim dividend per share | 49.00 HK cents, +10% |
-| Q14 | 1H2025 headline growth rates | VONB +14%, OPAT/share +12%, UFSG/share +10%, interim DPS +10% |
-| Q15 | 1H2024 interim dividend & buy-back | 44.50 HK cents, +5.2%; +US$2.0bn to the programme, total US$12.0bn |
-| Q16 | 1H2023 interim dividend per share | 42.29 HK cents, +5% |
-| Q17 | 1H2022 interim dividend per share | 40.28 HK cents, +6% |
-| Q18 | 1H2021 interim dividend per share | 38.00 HK cents, +8.6% |
-| Q19 | 5-year interim dividend series + CAGR | 38.00 → 40.28 → 42.29 → 44.50 → 49.00; ≈6.6% CAGR |
-| Q20 | FY2025 interim + final = total | 49.00 + 144.08 = 193.08 HK cents |
+- A handful of short documents — plain PageIndex or a simple prompt will do
+- Questions that need arithmetic across documents (see limitations)
+- A corpus with no meaningful directory structure and no useful filenames
+- Latency budgets under a second — navigation costs several LLM round trips
 
 ---
 
-## Notes
+## Limitations
 
-- Local mode handles **text-based PDFs only** — no OCR, no image understanding,
-  no folders. Those are PageIndex Cloud features.
-- The local client stores documents under `storage_path` (`results/pageindex_store/`
-  by default), one directory per document holding `tree.json`, `pages.json`
-  and `doc.json`.
-- Indexing is synchronous in local mode, so `submit_document()` blocks.
-- A 1H2026 interim report is also published and can be dropped into
-  `data/aia_reports/` — both scripts pick up new PDFs automatically.
+Stated plainly, because they are the questions a new user hits first.
+
+| Limit | Detail |
+|---|---|
+| **Locating ≠ computing** | The navigator finds the right section. If the answer needs arithmetic across sections, the model still does it by reading text. Numbers need a structured path — see [`docs/dify-improvement-plan.md`](docs/dify-improvement-plan.md). |
+| **Chapter summaries need an LLM** | A one-time per-corpus cost. Without them, section selection degrades to token matching. |
+| **PDFs need bookmarks or Azure DI** | With neither, a PDF falls back to one node per page — coarse, but never silently dropped. |
+| **Directory quality sets the ceiling** | Thousands of files flattened into one directory degrade level 0 to listing thousands of names. That is a corpus-organisation problem. |
+| **Fallbacks match tokens, not synonyms** | "Life insurance" will not match a directory named `人身险`. An embedding pre-filter would fix it — at the cost of reintroducing the similarity problem the design avoids. |
+| **Validated on synthetic corpora** | 16-file and 144-file corpora with known structure. The scale numbers are real; routing accuracy on a genuinely messy production corpus is not yet measured. |
+
+---
+
+## Documentation
+
+| | |
+|---|---|
+| **Architecture** | [`docs/ArchitectureIntro.html`](docs/ArchitectureIntro.html) — 8 diagrams, upstream + SuperIndex |
+| Navigator API and limits | [`nav/README.md`](nav/README.md) |
+| Project state, decisions, gotchas | [`docs/HANDOVER.md`](docs/HANDOVER.md) |
+| Structured-table proposal | [`docs/dify-improvement-plan.md`](docs/dify-improvement-plan.md) |
+| What was vendored, how to update | [`PageIndex/UPSTREAM.md`](PageIndex/UPSTREAM.md) |
+
+---
+
+## Credits and licence
+
+Built on **[PageIndex](https://github.com/VectifyAI/PageIndex)** by
+[Vectify AI](https://vectify.ai), MIT licensed and vendored here at commit
+`71714e8`. Upstream provides the tree-building engines and the agentic retrieval
+loop; SuperIndex adds corpus-level navigation and pluggable extraction on top.
+
+This project's own code is MIT licensed. See `PageIndex/LICENSE` for the upstream
+licence, which is retained as required.
