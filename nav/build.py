@@ -33,11 +33,97 @@ from nav import llm  # noqa: E402
 from extractors.azure_di import AzureDIError  # noqa: E402
 from nav.store import (Chapter, DirEntry, FileEntry, Manifest, file_key)  # noqa: E402
 
+# Bump whenever tree extraction changes shape (new extractor, new heading
+# detection, different fallback order). Without this, `scan(previous=...)`
+# would keep serving trees built by the old logic, because it only compares
+# file size and mtime — a logic change looks like "nothing changed".
+#
+# A bump also re-generates summaries, because a summary is a function of
+# (content, tree): it is written from the chapter outline, so a new tree means
+# the old summary describes a structure that no longer exists. That costs one
+# call per file plus one per directory, once.
+#
+#   2 — PDFs now use PageIndex flash for the chapter tree instead of falling
+#       straight to one node per page.
+BUILDER_VERSION = 2
+
 TEXT_EXT = {".md", ".markdown", ".txt"}
 PDF_EXT = {".pdf"}
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 BOLD_ONLY_RE = re.compile(r"^\*\*(.+?)\*\*\s*$")
 PAGE_MARK_RE = re.compile(r"^<!--\s*page:\s*(\d+)\s*-->\s*$")
+
+
+def _page_line_spans(lines: list[str]) -> dict[int, tuple[int, int]]:
+    """page number -> (first_line, last_line), 1-based inclusive.
+
+    PageIndex's flash engine reports page ranges; everything downstream in nav
+    addresses lines. This is the bridge between the two.
+    """
+    marks: list[tuple[int, int]] = []
+    for i, raw in enumerate(lines, start=1):
+        m = PAGE_MARK_RE.match(raw.strip())
+        if m:
+            marks.append((i, int(m.group(1))))
+    spans: dict[int, tuple[int, int]] = {}
+    for idx, (line_no, page_no) in enumerate(marks):
+        end = marks[idx + 1][0] - 1 if idx + 1 < len(marks) else len(lines)
+        spans[page_no] = (line_no, max(line_no, end))
+    return spans
+
+
+def _flash_chapters(pdf: Path, lines: list[str]) -> list[Chapter]:
+    """Chapter tree from PageIndex's offline layout analysis.
+
+    `flash` derives headings from font size, position and layout statistics —
+    **no LLM and no Azure Document Intelligence needed**. For a PDF that has
+    neither a usable text layer nor bookmarks, this is dramatically better than
+    the one-node-per-page fallback: on the AIA FY2022 report it yields 469 nodes
+    across 5 levels with real titles (CHAIRMAN'S STATEMENT, FINANCIAL
+    HIGHLIGHTS…), where the fallback yields 312 nodes all called "Page N".
+
+    Returns [] on any failure so the caller can fall back.
+    """
+    try:
+        from pageindex.flash import page_index_flash
+    except Exception as exc:  # noqa: BLE001 - optional dependency chain
+        print(f"    ! flash 不可用: {exc}")
+        return []
+    try:
+        tree = page_index_flash(str(pdf), summary=False, optimize=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"    ! flash 建树失败 {pdf.name}: {exc}")
+        return []
+
+    spans = _page_line_spans(lines)
+
+    def line_of(page: int, *, last: bool) -> int:
+        span = spans.get(page)
+        if span:
+            return span[1 if last else 0]
+        return len(lines) if last else 1     # no markers: clamp to the ends
+
+    def build(nodes, level: int) -> list[Chapter]:
+        out: list[Chapter] = []
+        for n in nodes or []:
+            title = str(n.get("title") or "").strip()
+            if not title:
+                continue
+            start_page = int(n.get("start_index") or 1)
+            end_page = int(n.get("end_index") or start_page)
+            out.append(Chapter(
+                title=title, level=level,
+                start=line_of(start_page, last=False),
+                end=line_of(end_page, last=True),
+                children=build(n.get("nodes"), level + 1),
+            ))
+        return out
+
+    chapters = build(tree.get("structure"), 1)
+    if chapters:
+        print(f"      flash: {sum(1 for c in chapters for _ in c.flatten())} 节点, "
+              f"最深 {max((c.level for c in chapters for c in c.flatten()), default=0)} 层")
+    return chapters
 
 
 def page_marker_chapters(lines: list[str]) -> list[Chapter]:
@@ -164,6 +250,19 @@ def pdf_chapters(path: Path) -> list[Chapter]:
         doc.close()
 
 
+def _pdf_text(extractor, path: Path) -> str:
+    """Extracted text, honouring the extractor's strict/fail-loud policy."""
+    try:
+        return extractor.document_text(path)
+    except Exception as exc:  # noqa: BLE001
+        # A configured-but-broken Azure backend must stop the build: carrying
+        # on would silently index the weaker text layer instead.
+        if getattr(extractor, "strict", False):
+            raise
+        print(f"    ! {path.name}: {exc}")
+        return ""
+
+
 def read_document(path: Path, extractor=None) -> tuple[list[Chapter], list[str]]:
     """Return (chapter tree, source lines) for one file.
 
@@ -177,21 +276,35 @@ def read_document(path: Path, extractor=None) -> tuple[list[Chapter], list[str]]
     3. **Neither** (no backend text at all) — the PDF's own bookmarks, if any.
     """
     if path.suffix.lower() in PDF_EXT:
-        if extractor is not None:
-            try:
-                text = extractor.document_text(path)
-            except Exception as exc:  # noqa: BLE001
-                # When Azure is configured but broken, stop the whole build:
-                # continuing would silently index the weaker text layer.
-                if getattr(extractor, "strict", False):
-                    raise
-                print(f"    ! {path.name}: {exc}")
-                text = ""
+        if extractor is None:
+            from extractors.backend import Extractor
+            extractor = Extractor()
+
+        # 1) Azure Document Intelligence — real Markdown, so headings *and*
+        #    tables survive. Only this path can produce markdown_chapters.
+        if getattr(extractor, "uses_azure", False):
+            text = _pdf_text(extractor, path)
             if text.strip():
                 lines = text.split("\n")
-                chapters = markdown_chapters(lines) or page_marker_chapters(lines)
+                chapters = markdown_chapters(lines)
                 if chapters:
                     return chapters, lines
+
+        # 2) Plain text layer, which flash's page numbers are resolved against.
+        lines = _pdf_text(extractor, path).split("\n")
+        if lines:
+            # 3) flash — a real hierarchy from layout statistics. Free: no LLM,
+            #    no Azure. This is what turns "one node per page" into an actual
+            #    table of contents.
+            chapters = _flash_chapters(path, lines)
+            if chapters:
+                return chapters, lines
+            # 4) One node per page, so nothing is unreachable.
+            chapters = page_marker_chapters(lines)
+            if chapters:
+                return chapters, lines
+
+        # 5) No usable text at all: fall back to the PDF's own bookmarks.
         return pdf_chapters(path), []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -217,8 +330,12 @@ def scan(root: Path, includes: set[str], excludes: set[str],
     caller can cheaply ask "did anything change?".
     """
     root = root.resolve()
-    m = Manifest(root=str(root), built_at=__import__("time").time())
+    m = Manifest(root=str(root), built_at=__import__("time").time(),
+                 builder_version=BUILDER_VERSION)
     trees: dict[str, tuple[list[Chapter], list[str]]] = {}
+    # A version change invalidates every cached tree, so the new logic runs.
+    rebuild_all = (previous is None
+                   or previous.builder_version != BUILDER_VERSION)
 
     def rel(p: Path) -> str:
         r = p.relative_to(root).as_posix()
@@ -276,8 +393,8 @@ def scan(root: Path, includes: set[str], excludes: set[str],
                 continue
 
             prev = previous.files.get(frp) if previous is not None else None
-            if (prev is not None and prev.size == st.st_size
-                    and prev.mtime == st.st_mtime):
+            if (not rebuild_all and prev is not None
+                    and prev.size == st.st_size and prev.mtime == st.st_mtime):
                 m.files[frp] = prev          # unchanged: keep entry and its tree
                 entry.files.append(frp)
                 count += 1

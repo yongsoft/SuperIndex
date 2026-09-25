@@ -82,9 +82,25 @@ the default whenever it is configured**:
 | Page anchors | synthesised | injected at real page boundaries |
 
 Set two environment variables and every entry point takes it up automatically —
-no flag to remember. With nothing configured you get the text layer, exactly as
-before. **The backend never switches silently**, and a configured-but-failing
-backend aborts rather than quietly degrading index quality.
+no flag to remember. **The backend never switches silently**, and a
+configured-but-failing backend aborts rather than quietly degrading index quality.
+
+### A PDF still gets a real chapter tree without Azure
+
+With no Azure configured, the chapter tree comes from PageIndex's offline
+**`flash`** engine, which derives headings from font size, position and layout
+statistics — no LLM, no network. On the AIA FY2022 report that is the difference
+between **312 nodes all named `Page N`** and **469 nodes across 5 levels with
+real titles** (`CHAIRMAN'S STATEMENT`, `FINANCIAL HIGHLIGHTS`, …).
+
+The full order for a PDF is:
+
+| # | Path | When |
+|---|---|---|
+| 1 | **Azure DI** | configured — real Markdown, tables preserved |
+| 2 | **flash** | offline layout analysis, free |
+| 3 | one node per page | so nothing is ever unreachable |
+| 4 | the PDF's own bookmarks | no usable text layer at all |
 
 ### Upstream stays pristine
 
@@ -440,7 +456,7 @@ Stated plainly, because they are the questions a new user hits first.
 |---|---|
 | **Locating ≠ computing** | The navigator finds the right section. If the answer needs arithmetic across sections, the model still does it by reading text. Numbers need a structured path — see [`docs/dify-improvement-plan.md`](docs/dify-improvement-plan.md). |
 | **Chapter summaries need an LLM** | A one-time per-corpus cost. Without them, section selection degrades to token matching. |
-| **PDFs need bookmarks or Azure DI** | With neither, a PDF falls back to one node per page — coarse, but never silently dropped. |
+| **Scanned PDFs still need Azure DI** | A PDF is no longer reduced to one node per page: PageIndex's offline `flash` engine builds a real chapter tree from layout statistics. But a PDF with *no text layer at all* still needs Azure DI's OCR. |
 | **Directory quality sets the ceiling** | Thousands of files flattened into one directory degrade level 0 to listing thousands of names. That is a corpus-organisation problem. |
 | **Fallbacks match tokens, not synonyms** | "Life insurance" will not match a directory named `人身险`. An embedding pre-filter would fix it — at the cost of reintroducing the similarity problem the design avoids. |
 | **Validated on synthetic corpora** | 16-file and 144-file corpora with known structure. The scale numbers are real; routing accuracy on a genuinely messy production corpus is not yet measured. |

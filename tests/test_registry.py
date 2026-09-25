@@ -25,7 +25,8 @@ sys.path.insert(0, str(ROOT))
 from nav.registry import (  # noqa: E402
     Corpus, Registry, STATUS_ERROR, STATUS_READY,
 )
-from nav.build import (_ancestor_dirs, _spread, corpus_fingerprint,  # noqa: E402
+from nav.build import (BUILDER_VERSION, _ancestor_dirs, _flash_chapters,  # noqa: E402
+                       _page_line_spans, _spread, corpus_fingerprint,
                        scan, summarize_files)
 from nav.route import (MultiNavigator, Result, build_context,  # noqa: E402
                        display_path, merge_manifests, _score_candidate)
@@ -638,6 +639,85 @@ def test_topic_in_routing_labels(tmp: Path) -> None:
                                "归档/A", "友邦保险年报，含每股股息", ["2024"])))
 
 
+def test_page_line_spans() -> None:
+    print("\n[_page_line_spans —— 页码 → 行号]")
+    lines = ["<!-- page: 1 -->", "a", "b",
+             "<!-- page: 2 -->", "c",
+             "<!-- page: 3 -->", "d", "e"]
+    # 标记行本身算在它那一页里：p1 从行 1 到行 3（下一个标记的前一行）
+    spans = _page_line_spans(lines)
+    check("页 1 覆盖到下一标记前", spans.get(1) == (1, 3), str(spans.get(1)))
+    check("页 2", spans.get(2) == (4, 5), str(spans.get(2)))
+    check("末页到文件尾", spans.get(3) == (6, 8), str(spans.get(3)))
+    check("每页都从标记行开始",
+          all(spans[p][0] == i for p, i in ((1, 1), (2, 4), (3, 6))),
+          str(spans))
+    check("无页标记 → 空映射", _page_line_spans(["a", "b"]) == {})
+
+
+def test_flash_chapters_stubbed() -> None:
+    print("\n[_flash_chapters —— flash 树转成行号制]")
+    import pageindex.flash as flash_mod
+
+    lines = ["<!-- page: 1 -->", "a", "<!-- page: 2 -->", "b",
+             "<!-- page: 3 -->", "c"]
+    tree = {"structure": [
+        {"title": "CHAPTER ONE", "start_index": 1, "end_index": 2,
+         "nodes": [{"title": "Sub", "start_index": 2, "end_index": 2}]},
+        {"title": "CHAPTER TWO", "start_index": 3, "end_index": 3},
+        {"title": "   ", "start_index": 3, "end_index": 3},
+    ]}
+    real = flash_mod.page_index_flash
+    flash_mod.page_index_flash = lambda path, **kw: tree
+    try:
+        chapters = _flash_chapters(Path("x.pdf"), lines)
+    finally:
+        flash_mod.page_index_flash = real
+
+    check("空标题被跳过", len(chapters) == 2, str([c.title for c in chapters]))
+    check("标题保留", chapters[0].title == "CHAPTER ONE")
+    spans = _page_line_spans(lines)
+    # 期望值从 spans 推导，避免手算页码↔行号再算错
+    check("页码已转成行号",
+          (chapters[0].start, chapters[0].end)
+          == (spans[1][0], spans[2][1]),
+          f"{(chapters[0].start, chapters[0].end)} vs {(spans[1][0], spans[2][1])}")
+    check("子节点保留", len(chapters[0].children) == 1)
+    check("单页章节范围",
+          (chapters[1].start, chapters[1].end) == (spans[3][0], spans[3][1]),
+          f"{(chapters[1].start, chapters[1].end)} vs {(spans[3][0], spans[3][1])}")
+
+    # flash 失败必须优雅返回空，交给调用方回退
+    def boom(path, **kw):
+        raise RuntimeError("flash exploded")
+    flash_mod.page_index_flash = boom
+    try:
+        check("flash 抛错 → 返回 []（可回退）",
+              _flash_chapters(Path("x.pdf"), lines) == [])
+    finally:
+        flash_mod.page_index_flash = real
+
+
+def test_builder_version_invalidates(tmp: Path) -> None:
+    print("\n[BUILDER_VERSION —— 改建树逻辑必须让旧树失效]")
+    root = tmp / "bver" / "corpus"
+    (root / "d").mkdir(parents=True)
+    (root / "d" / "a.md").write_text("# a\n\n## s\n\nbody\n", encoding="utf-8")
+
+    m1, t1 = scan(root, {".md"}, set())
+    check("首次建树", len(t1) == 1, str(len(t1)))
+    check("写入了版本号", m1.builder_version == BUILDER_VERSION,
+          str(m1.builder_version))
+
+    m2, t2 = scan(root, {".md"}, set(), previous=m1)
+    check("同版本 + 未变 → 跳过", len(t2) == 0, str(len(t2)))
+
+    # 模拟「旧版本建的索引」：内容没变，但建树逻辑变了
+    m1.builder_version = BUILDER_VERSION - 1
+    m3, t3 = scan(root, {".md"}, set(), previous=m1)
+    check("版本不同 → 强制重建", len(t3) == 1, str(len(t3)))
+
+
 def main() -> int:
     print("=" * 74)
     print("Corpus registry tests（全部离线，不调用 LLM）")
@@ -649,6 +729,9 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_page_line_spans()
+        test_flash_chapters_stubbed()
+        test_builder_version_invalidates(tmp)
         test_scan_preserves_derived_fields(tmp)
         test_spread_sampling()
         test_corpus_fingerprint(tmp)
