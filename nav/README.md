@@ -185,6 +185,24 @@ context, sources = build_context(res, nav)        # 按相关性截断，预算�
 | **索引与源文件分离** | 注册 `/data/reports` 只往 `index/corpora/<id>/` 写，源目录只读 |
 | **目录消失 → error** | 带可读错误信息，而不是静默返回空结果 |
 
+## 调试日志：`debuglog.py`
+
+每次提问都会记一条结构化记录，回答错了能事后查：
+
+```python
+from nav.debuglog import QueryTrace
+t = QueryTrace(question, scope_names, model=...)
+t.route_step(level="dir", where=..., picked=[...])
+t.sources([...])
+t.finish(answer)          # 正常
+t.abort("no files located")   # 跑完但没找到（只写 queries）
+t.fail(exc, stage="ask")      # 抛异常（queries + errors，id 关联）
+```
+
+写到 `results/logs/queries.jsonl` 与 `errors.jsonl`，用
+`python scripts/07_logs.py --id <id>` 还原单条全过程。
+日志写入失败只打一行 stderr，**绝不影响主流程**。
+
 ## 已知限制
 
 - **章节级摘要需要 LLM**，上千文件的语料是一次性成本。没有摘要时章节定位

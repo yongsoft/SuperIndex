@@ -323,7 +323,7 @@ def summarize_files(m: Manifest, index_dir: Path, model: str, workers: int,
             f"开头内容:\n{head}"
         )
         try:
-            return fe.rel_path, llm.chat(prompt, model=model, max_tokens=200).strip()
+            return fe.rel_path, llm.chat(prompt, model=model, max_tokens=400).strip()
         except Exception as exc:  # noqa: BLE001
             print(f"    ! {fe.rel_path}: {exc}")
             return fe.rel_path, ""
@@ -353,7 +353,7 @@ def summarize_files(m: Manifest, index_dir: Path, model: str, workers: int,
             f"直接内容:\n{listing}"
         )
         try:
-            d.summary = llm.chat(prompt, model=model, max_tokens=200).strip()
+            d.summary = llm.chat(prompt, model=model, max_tokens=400).strip()
         except Exception as exc:  # noqa: BLE001
             print(f"    ! {d.rel_path}: {exc}")
         if i % 25 == 0 or i == len(dirs_todo):
@@ -395,7 +395,7 @@ def summarize_chapters(m: Manifest, index_dir: Path, model: str, workers: int,
             f"文件: {fe.name}\n章节: {ch.title}\n\n内容:\n{body[:2400]}"
         )
         try:
-            return ch, llm.chat(prompt, model=model, max_tokens=180).strip()
+            return ch, llm.chat(prompt, model=model, max_tokens=400).strip()
         except Exception as exc:  # noqa: BLE001
             return ch, ""
 

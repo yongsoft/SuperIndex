@@ -208,7 +208,9 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 ├── tests/
 │   ├── test_azure_di.py       azure_di 的离线测试（28 断言，不联网）
 │   ├── test_backend.py        后端解析的离线测试（25 断言，不联网）
-│   └── test_registry.py       语料注册表/watcher 的离线测试（57 断言，不联网）
+│   ├── test_registry.py       语料注册表/watcher 的离线测试（67 断言，不联网）
+│   ├── test_llm_retry.py      LLM 预算升级与流式回退（23 断言，stub 掉 litellm）
+│   └── test_debuglog.py       日志记录/过滤/轮转（40 断言，写临时目录）
 │
 ├── webapp/                    ★ 目录驱动的 Web 界面
 │   ├── server.py              标准库 http.server + SSE，端口 8787
@@ -219,6 +221,7 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── llm.py                 LLM 调用封装（JSON 提取+修复+重试 / 流式）
 │   ├── store.py               数据模型与持久化
 │   ├── registry.py            ★ 语料注册表：多目录、后台索引、变化监控
+│   ├── debuglog.py            ★ 结构化调试日志（queries.jsonl / errors.jsonl）
 │   ├── build.py               CLI：建索引
 │   └── route.py               CLI：两级导航查询
 │
@@ -486,6 +489,75 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
   避免长尾章节挤掉最相关的那个
 - `Navigator._load_tree()` 抽成可覆写方法（原来两处硬编码 `self.m.load_tree`）
 
+### 5.12 LLM 重试与 token 预算升级（修 bug）
+
+**症状**：`RuntimeError: LLM call failed after 3 attempts: (empty content,
+finish_reason=length)` —— 提问时回答阶段直接报错。
+
+**根因（三个叠在一起）**：
+
+1. **重试是「原样重试」** —— `finish_reason=length` 说明预算不够，
+   拿同样的 `max_tokens` 再试一次**必然同样失败**。三次重试全废。
+2. **reasoning token 占预算** —— 开了 `reasoning_effort` 时，思考 token
+   也算进 `max_tokens`。预算小时思考完就没额度输出内容了，
+   于是「正常结束但内容为空」。
+3. **答案预算太小** —— 服务器给回答阶段 1500，对开 reasoning 的模型不够。
+
+**修法**（`nav/llm.py`）：
+
+- 区分「截断」和「传输错误」：
+  - 截断 → 每次重试 **`max_tokens` 翻倍**（上限 `NAV_MAX_TOKEN_CEILING`，
+    默认 16384），同时**去掉 `reasoning_effort`** 把预算让给内容
+  - 传输错误 → 原样重试（预算不变）
+- `chat_stream_text()` 的回退也用**翻倍后的预算**（原来复用同一个，
+  所以流式失败后非流式必然同样失败）
+- 服务器答案预算 1500 → **4096**（`SUPERINDEX_ANSWER_MAX_TOKENS` 可覆盖）
+- 报错信息改成**逐次列出每次尝试**的预算与 reasoning 状态，便于诊断
+
+覆盖测试：`tests/test_llm_retry.py`（23 条，stub 掉 litellm，不联网）。
+
+### 5.13 `nav/debuglog.py` —— 结构化调试日志（新增）
+
+目的：**回答错了能事后查，不用猜**。
+
+两条 append-only JSONL（`results/logs/`，已 gitignore）：
+
+| 文件 | 内容 |
+|---|---|
+| `queries.jsonl` | 每次提问一条：范围、每一步路由决策、读到的来源、回答、分阶段耗时 |
+| `errors.jsonl` | 每次异常一条：类型、消息、完整 traceback、当时的上下文 |
+
+两者**共享 id**，异常能 join 回它所属的查询。
+
+**三种终态**（区分开很重要）：
+
+- `finish()` —— 正常回答
+- `abort(reason)` —— 跑完了但没找到（没定位到文件/章节）。**只写 queries**，
+  因为「空结果」是质量信号，不是 bug
+- `fail(exc)` —— 抛异常。**写 queries（ok=false）+ errors**，id 关联
+
+**读取**：
+
+```bash
+python scripts/07_logs.py                  # 列表
+python scripts/07_logs.py --failed         # 只看失败的
+python scripts/07_logs.py --id q-xxxxxxxx  # 单条完整还原 + 关联异常
+python scripts/07_logs.py --kind errors    # 异常列表
+python scripts/07_logs.py --stats
+```
+
+服务端：`GET /api/logs?kind=queries|errors&limit=N&failed=1`；
+`/api/state` 里带 `logs` 统计。
+
+**工程约束**：
+
+- **日志失败绝不能影响主流程** —— 每次写入都包了 try，失败只在 stderr
+  打一行然后静默（有测试专门验证）
+- 超过 `SUPERINDEX_LOG_MAX_BYTES`（默认 16MB）自动轮转成 `.1`
+- `SUPERINDEX_DEBUG_LOG=0` 可关闭，`SUPERINDEX_LOG_DIR` 可换位置
+
+覆盖测试：`tests/test_debuglog.py`（40 条，全部写临时目录）。
+
 ---
 
 ## 六、关键设计决策（**接手后请不要轻易改**）
@@ -658,10 +730,12 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（120 条断言，不联网，约 15 秒）
+# 5. 跑离线测试（183 条断言，不联网，约 20 秒）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
 $PY -u tests/test_backend.py      # 25 条：后端解析/按页切分/PageIndex 接管
 $PY -u tests/test_registry.py     # 67 条：注册表/变更检测/watcher/投放区
+$PY -u tests/test_llm_retry.py    # 23 条：token 预算升级/流式回退
+$PY -u tests/test_debuglog.py     # 40 条：日志记录/过滤/轮转
 #   注：下载样例 PDF 后 test_backend 会多 2 条（27 条）
 
 # 6. 检查 Azure DI 配置（未配 key 会给出可操作的报错，这是预期的）

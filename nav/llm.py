@@ -19,12 +19,17 @@ try:
 except ImportError:  # pragma: no cover
     pass
 
+from nav.debuglog import error as log_error  # noqa: E402
+
 DEFAULT_MODEL = os.getenv("NAV_MODEL", os.getenv("PAGEINDEX_CHAT_MODEL",
                                                  "deepseek/deepseek-flash"))
 # Reasoning is the single biggest latency lever: on routing prompts the model
 # can spiral on open-ended tasks and burn the whole output budget without
 # emitting content. "none" disables it outright; "low" is the safe middle.
 DEFAULT_EFFORT = os.getenv("NAV_REASONING_EFFORT", "none")
+
+# Upper bound for the token-budget escalation below.
+MAX_TOKEN_CEILING = int(os.getenv("NAV_MAX_TOKEN_CEILING", "16384"))
 
 
 def _litellm():
@@ -64,26 +69,52 @@ def extract_json(text: str) -> Optional[Any]:
 
 def chat(prompt: str, model: str = DEFAULT_MODEL, effort: str = DEFAULT_EFFORT,
          max_tokens: int = 2048, retries: int = 2) -> str:
-    """One completion. Retries on empty content or transport errors."""
+    """One completion. Retries on empty content or transport errors.
+
+    A `finish_reason == "length"` reply gets special handling: the model ran out
+    of budget, so **retrying the identical request cannot help**. Each retry
+    doubles `max_tokens` and drops `reasoning_effort`, because reasoning tokens
+    are usually what consumed the budget — which is why a "low effort" call can
+    return no content at all while still reporting a normal finish.
+    """
     litellm = _litellm()
-    kwargs: dict[str, Any] = {"max_tokens": max_tokens}
-    if effort:
-        kwargs["reasoning_effort"] = effort
-    last = ""
+    budget = max_tokens
+    reasoning = effort
+    attempts: list[str] = []
     for attempt in range(retries + 1):
+        kwargs: dict[str, Any] = {"max_tokens": budget}
+        if reasoning:
+            kwargs["reasoning_effort"] = reasoning
+        note = ""
         try:
-            resp = litellm.completion(model=model,
-                                      messages=[{"role": "user", "content": prompt}],
-                                      **kwargs)
-            content = (resp.choices[0].message.content or "").strip()
+            resp = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                **kwargs)
+            choice = resp.choices[0]
+            content = (choice.message.content or "").strip()
             if content:
                 return content
-            last = f"(empty content, finish_reason={resp.choices[0].finish_reason})"
+            finish = choice.finish_reason
+            note = (f"empty content, finish_reason={finish}, "
+                    f"max_tokens={budget}, reasoning={reasoning or 'off'}")
+            if finish == "length" and attempt < retries:
+                budget = min(budget * 2, MAX_TOKEN_CEILING)
+                if reasoning:
+                    reasoning = ""      # free the budget for actual content
+                    note += f" -> retry with max_tokens={budget}, reasoning off"
+                else:
+                    note += f" -> retry with max_tokens={budget}"
         except Exception as exc:  # noqa: BLE001
-            last = f"{type(exc).__name__}: {exc}"
+            note = f"{type(exc).__name__}: {exc} (max_tokens={budget})"
+        attempts.append(f"#{attempt + 1}: {note}")
         if attempt < retries:
             time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"LLM call failed after {retries + 1} attempts: {last}")
+    detail = " | ".join(attempts)
+    log_error(RuntimeError(detail), where="llm.chat", model=model,
+              prompt_chars=len(prompt), attempts=attempts)
+    raise RuntimeError(
+        f"LLM call failed after {retries + 1} attempts: {detail}")
 
 
 def chat_json(prompt: str, model: str = DEFAULT_MODEL, effort: str = DEFAULT_EFFORT,
@@ -124,7 +155,13 @@ def chat_stream(prompt: str, model: str = DEFAULT_MODEL,
 
 def chat_stream_text(prompt: str, model: str = DEFAULT_MODEL,
                      effort: str = DEFAULT_EFFORT, max_tokens: int = 2048):
-    """chat_stream with a non-streaming fallback, always yielding at least once."""
+    """chat_stream with a non-streaming fallback, always yielding at least once.
+
+    Some providers return an **empty stream** rather than an error when the
+    output budget is exhausted. Falling back with the same budget would fail the
+    same way, so the fallback gets twice the room (capped), and `chat()`'s own
+    escalation handles it from there.
+    """
     got = False
     try:
         for delta in chat_stream(prompt, model=model, effort=effort,
@@ -135,4 +172,5 @@ def chat_stream_text(prompt: str, model: str = DEFAULT_MODEL,
         if got:
             raise
     if not got:
-        yield chat(prompt, model=model, effort=effort, max_tokens=max_tokens)
+        yield chat(prompt, model=model, effort=effort,
+                   max_tokens=min(max_tokens * 2, MAX_TOKEN_CEILING))

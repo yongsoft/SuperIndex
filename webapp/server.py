@@ -45,6 +45,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 from nav import llm  # noqa: E402
+from nav.debuglog import QueryTrace, read as read_log, stats as log_stats  # noqa: E402
 from nav.registry import DATA_ROOT, Registry  # noqa: E402
 from nav.route import Result, build_context, answer_prompt  # noqa: E402
 
@@ -53,6 +54,11 @@ STATIC = Path(__file__).resolve().parent / "static"
 # "low" cut wall clock 10.3s -> 5.8s on a deep question with the answer
 # unchanged; it is the single biggest latency lever we measured.
 REASONING_EFFORT = os.getenv("PAGEINDEX_REASONING_EFFORT", "low").strip() or None
+
+# Reasoning tokens count against max_tokens, so a tight budget with reasoning on
+# returns an empty answer with finish_reason=length. 1500 was too small; the
+# retry logic in nav/llm.py now escalates, but start with enough room.
+ANSWER_MAX_TOKENS = int(os.getenv("SUPERINDEX_ANSWER_MAX_TOKENS", "4096"))
 
 _registry: Registry | None = None
 _registry_lock = threading.Lock()
@@ -147,6 +153,24 @@ class Handler(BaseHTTPRequestHandler):
                 "reasoning_effort": REASONING_EFFORT,
                 "home": str(Path.home()),
                 "data_root": str(DATA_ROOT),
+                "logs": log_stats(),
+            })
+        elif path == "/api/logs":
+            q = parse_qs(url.query)
+            kind = q.get("kind", ["queries"])[0]
+            if kind not in ("queries", "errors"):
+                return self._json({"error": "kind must be queries or errors"}, 400)
+            try:
+                limit = max(1, min(int(q.get("limit", ["50"])[0]), 500))
+            except ValueError:
+                limit = 50
+            self._json({
+                "kind": kind,
+                "stats": log_stats(),
+                "records": read_log(
+                    kind, limit=limit,
+                    only_failed=q.get("failed", ["0"])[0] in ("1", "true"),
+                    query_id=q.get("id", [""])[0]),
             })
         elif path == "/api/browse":
             q = parse_qs(url.query)
@@ -246,6 +270,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         started = time.time()
+        trace = QueryTrace(question,
+                           [corpus_name(reg, c) for c in nav.corpus_ids],
+                           model=llm.DEFAULT_MODEL)
         try:
             with _ask_lock:
                 emit("stage", {"text": f"路由：{len(nav.corpus_ids)} 个语料"})
@@ -253,47 +280,74 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Level 0/1: which files. Emitted per step so the UI can show
                 # the model narrowing down while it happens.
+                trace.mark("route")
                 res.files, t1 = nav.find_files(question, top_n=5)
                 for st in t1:
                     emit("nav", {"level": "dir", "where": st.where,
                                  "detail": st.detail, "picked": st.picked,
                                  "note": st.note})
+                    trace.route_step(level="dir", where=st.where, detail=st.detail,
+                                     picked=st.picked, note=st.note)
+                trace.stage_ms("route", trace.elapsed("route"))
+                trace.files([f.rel_path for f in res.files])
                 if not res.files:
+                    trace.abort("no files located")
                     emit("error", {"message": "没有定位到相关文件"})
                     emit("done", {"ok": False, "ms": int((time.time()-started)*1000)})
                     return
 
                 # Level 2: which sections.
+                trace.mark("sections")
                 for fe in res.files:
                     secs, t2 = nav.find_sections(question, fe, top_n=6)
                     for st in t2:
                         emit("nav", {"level": "chapter", "where": st.where,
                                      "detail": st.detail, "picked": st.picked,
                                      "note": st.note})
+                        trace.route_step(level="chapter", where=st.where,
+                                         detail=st.detail, picked=st.picked,
+                                         note=st.note)
                     res.sections += [(fe, s) for s in secs]
+                trace.stage_ms("sections", trace.elapsed("sections"))
 
                 context, sources = build_context(res, nav)
+                trace.sources(sources)
                 emit("sources", sources)
 
                 if not sources:
+                    trace.abort("no sections located")
                     emit("error", {"message": "定位到文件但没找到具体章节"})
                     emit("done", {"ok": False, "ms": int((time.time()-started)*1000)})
                     return
 
                 emit("stage", {"text": f"生成回答（{len(sources)} 个来源）"})
+                trace.mark("answer")
+                answer = ""
                 for delta in llm.chat_stream_text(
                         answer_prompt(question, context),
-                        effort=REASONING_EFFORT, max_tokens=1500):
+                        effort=REASONING_EFFORT,
+                        max_tokens=ANSWER_MAX_TOKENS):
+                    answer += delta
                     emit("answer", {"delta": delta})
+                trace.stage_ms("answer", trace.elapsed("answer"))
+                trace.finish(answer, context_chars=len(context))
 
             emit("done", {"ok": True, "ms": int((time.time() - started) * 1000)})
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
+            # One record in queries.jsonl (ok=false) plus one in errors.jsonl,
+            # sharing the same id so they can be joined.
+            trace.fail(exc, stage="ask")
             try:
                 emit("error", {"message": f"{type(exc).__name__}: {exc}"})
                 emit("done", {"ok": False, "ms": int((time.time()-started)*1000)})
             except Exception:  # noqa: BLE001 - client already gone
                 pass
+
+
+def corpus_name(reg: Registry, cid: str) -> str:
+    c = reg.get(cid)
+    return c.name if c else cid
 
 
 def browse(raw: str) -> dict:

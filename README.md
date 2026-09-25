@@ -139,13 +139,15 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**120 assertions** across the extraction, navigation and registry layers, with no
-network and no credentials required:
+**183 assertions** across the extraction, navigation, registry, LLM-retry and
+logging layers, with no network and no credentials required:
 
 ```bash
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
 python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
 python tests/test_registry.py    # 67 assertions — registry, change detection, watcher, drop zone
+python tests/test_llm_retry.py   # 23 assertions — token-budget escalation, stream fallback
+python tests/test_debuglog.py    # 40 assertions — query/error records, rotation, filters
 ```
 
 `test_backend.py` reports 27 once the sample PDFs are present; without them the
@@ -336,6 +338,51 @@ whole store on a bigger volume.
   readable message instead of silently returning nothing.
 - Registering a directory **inside the project** is refused — it would recurse
   into `index/` while that same index is being written.
+
+---
+
+## Debugging
+
+Every question is logged, so a wrong answer can be diagnosed after the fact
+rather than guessed at. Two append-only JSONL streams under `results/logs/`:
+
+| File | What's in it |
+|---|---|
+| `queries.jsonl` | one record per question: scope, every routing decision, sources read, the answer, per-stage timings |
+| `errors.jsonl` | one record per exception: type, message, full traceback, and the context in flight |
+
+Both carry a shared id, so an exception can be joined back to the query it
+belongs to. Read them without the server running:
+
+```bash
+python scripts/07_logs.py                     # recent queries, one line each
+python scripts/07_logs.py --failed            # only the ones that failed or found nothing
+python scripts/07_logs.py --id q-1a2b3c4d     # one query in full, plus any exception
+python scripts/07_logs.py --kind errors       # recent exceptions
+python scripts/07_logs.py --stats
+```
+
+`--id` prints the whole story, which is what makes a bad answer actionable:
+
+```
+  问题   : 友邦保险 2024 年全年的每股股息是多少？
+  范围   : aia_reports, 中国太保, 中国平安, 友邦保险, 行业汇总
+  耗时   : route=2.7s  sections=0.8s  answer=1.2s
+
+  检索路径 3 步:
+    [dir    ] 全树 29 个目录
+              → 610b3c99/2024/annual, 610b3c99/2024
+    [chapter] 610b3c99/2024/annual/AIA_AR2024.md
+              → 股息, 财务摘要
+```
+
+The timings tell you where to look: routing dominates here, so that is where a
+latency fix would pay off.
+
+`GET /api/logs?kind=queries|errors&limit=N&failed=1` serves the same data to the
+UI. Set `SUPERINDEX_DEBUG_LOG=0` to turn logging off, `SUPERINDEX_LOG_DIR` to
+move it. Logging never breaks the app — a write failure prints one line to
+stderr and is otherwise swallowed.
 
 ---
 

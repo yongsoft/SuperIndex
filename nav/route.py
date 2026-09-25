@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -63,6 +64,15 @@ class Result:
     trace: list[Step] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
+
+# Output budgets. These are caps, not charges — a reply that fits costs the same
+# either way, so the only thing a tight cap buys is a truncation. Reasoning
+# models count their thinking against the cap, which is why the old 400-600
+# values were fragile: one long reasoning chain and the call returned
+# finish_reason=length with no content. nav/llm.chat() now escalates on
+# truncation, but starting with enough room avoids paying for the retry.
+TOKENS_ROUTE = int(os.getenv("NAV_TOKENS_ROUTE", "1500"))
+TOKENS_SECTION = int(os.getenv("NAV_TOKENS_SECTION", "1200"))
 
 def year_hints(question: str) -> list[str]:
     """Years mentioned in the question — the strongest routing signal for reports."""
@@ -143,7 +153,7 @@ class Navigator:
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
-                                max_tokens=600)
+                                max_tokens=TOKENS_ROUTE)
             idxs = [i for i in _ints(ans.get("dirs")) if 0 <= i < len(ids)]
         except Exception as exc:  # noqa: BLE001
             self._say(f"  ! 目录选择失败: {exc}")
@@ -196,7 +206,7 @@ class Navigator:
             )
             try:
                 ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
-                                    max_tokens=500)
+                                    max_tokens=TOKENS_SECTION)
             except Exception as exc:  # noqa: BLE001
                 self._say(f"  ! 逐层下钻失败: {exc}")
                 break
@@ -287,7 +297,7 @@ class Navigator:
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
-                                max_tokens=500)
+                                max_tokens=TOKENS_SECTION)
             idxs = [i for i in _ints(ans.get("files")) if 0 <= i < len(pool)]
         except Exception as exc:  # noqa: BLE001
             self._say(f"  ! 文件选择失败: {exc}")
@@ -352,7 +362,7 @@ class Navigator:
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
-                                max_tokens=400)
+                                max_tokens=TOKENS_SECTION)
             idxs = [i for i in _ints(ans.get("sections")) if 0 <= i < len(flat)]
         except Exception as exc:  # noqa: BLE001
             self._say(f"  ! 章节定位失败 ({fe.name}): {exc}")
