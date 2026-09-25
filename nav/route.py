@@ -80,28 +80,55 @@ def year_hints(question: str) -> list[str]:
     return re.findall(r"(?:19|20)\d{2}", question)
 
 
-def _score_candidate(question: str, path: str, summary: str,
-                     years: list[str]) -> int:
-    """Score one candidate against the question, path and summary together.
+def _question_terms(question: str) -> list[tuple[str, int]]:
+    """(term, weight) pairs to match a question against a candidate.
 
-    A summary hit is worth more than a path hit (2 vs 1 for a term, equal for a
-    year) because the two signals are not equally trustworthy: the summary is
-    derived from the document's own content, while the path is only as good as
-    the folder name someone happened to choose. The fallback exists precisely
-    for the case where those names are unhelpful, so it must not lean on them.
+    Chinese has no spaces, so `[\u4e00-\u9fff]{2,}` returns whole runs — for
+    "友邦保险 2024 年的每股股息是多少" that is "年的每股股息是多少", which will
+    never appear verbatim in a summary. Matching therefore also uses **bigrams**
+    of each run, which is what makes the fallback work for Chinese at all.
+
+    The whole run is kept too, at a higher weight, so an exact phrase still
+    outranks an accidental two-character overlap.
+    """
+    out: list[tuple[str, int]] = []
+    for run in re.findall(r"[\u4e00-\u9fff]+", question):
+        if len(run) <= 3:
+            out.append((run, 2))
+        else:
+            out.append((run, 2))
+            out.extend((run[i:i + 2], 1) for i in range(len(run) - 1))
+    out.extend((w, 2) for w in re.findall(r"[A-Za-z]{3,}", question))
+    return out
+
+
+def _score_candidate(question: str, path: str, summary: str,
+                     years: list[str], topic: str = "") -> int:
+    """Score one candidate against the question.
+
+    Weighting follows trustworthiness, not convenience:
+
+    * **path** (a folder name someone chose for the org chart) — 1 per term
+    * **topic / summary** (derived from the documents themselves) — the term's
+      weight, so a whole-phrase hit counts double a bigram overlap
+    * **year** anywhere — 3, because a period match is the strongest signal
+      available and is what cross-period questions get wrong
+
+    The fallback exists precisely for the case where folder names are
+    unhelpful, so it must not lean on them.
     """
     low_path = path.lower()
-    low_sum = (summary or "").lower()
+    low_text = f"{topic or ''} {summary or ''}".lower()
     score = 0
     for year in years:
-        if year in path or year in low_sum:
+        if year in path or year in low_text:
             score += 3
-    for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{3,}", question):
-        t = tok.lower()
+    for term, weight in _question_terms(question):
+        t = term.lower()
         if t in low_path:
             score += 1
-        if t in low_sum:
-            score += 2
+        if t in low_text:
+            score += weight
     return score
 
 
@@ -165,7 +192,10 @@ class Navigator:
             pad = "  " * depth
             ids.append(d.rel_path)
             i = len(ids) - 1
-            label = f"{pad}[D{i}] {d.name}/  ({d.n_files} 文件, {d.n_dirs} 子目录)"
+            # Show the content-derived topic when we have one: the folder name
+            # may say nothing about what is inside.
+            shown = d.topic or d.name
+            label = f"{pad}[D{i}] {shown}/  ({d.n_files} 文件, {d.n_dirs} 子目录)"
             if d.summary:
                 label += f" — {d.summary}"
             lines.append(label)
@@ -225,7 +255,7 @@ class Navigator:
             lines, ids = [], []
             for d in dirs:
                 ids.append(d.rel_path)
-                lines.append(f"[D{len(ids)-1}] {d.name}/  ({d.n_files} 文件)"
+                lines.append(f"[D{len(ids)-1}] {d.topic or d.name}/  ({d.n_files} 文件)"
                              + (f" — {d.summary}" if d.summary else ""))
             fids = []
             for f in files:
@@ -287,7 +317,7 @@ class Navigator:
         years = year_hints(question)
         scored = []
         for d in dirs:
-            s = _score_candidate(question, d.rel_path, d.summary, years)
+            s = _score_candidate(question, d.rel_path, d.summary, years, d.topic)
             if s:
                 scored.append((s, d.rel_path))
         scored.sort(reverse=True)

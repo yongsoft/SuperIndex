@@ -11,6 +11,7 @@ LLM is called. Fixtures are built in a temp directory, never in the repo.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 import shutil
 import sys
@@ -24,10 +25,11 @@ sys.path.insert(0, str(ROOT))
 from nav.registry import (  # noqa: E402
     Corpus, Registry, STATUS_ERROR, STATUS_READY,
 )
-from nav.build import _ancestor_dirs, scan, summarize_files  # noqa: E402
+from nav.build import (_ancestor_dirs, _spread, corpus_fingerprint,  # noqa: E402
+                       scan, summarize_files)
 from nav.route import (MultiNavigator, Result, build_context,  # noqa: E402
                        display_path, merge_manifests, _score_candidate)
-from nav.store import Manifest  # noqa: E402
+from nav.store import DirEntry, Manifest  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -434,7 +436,14 @@ def stubbed_chat(prefix: str = "SUM"):
 
     def fake(prompt, **kw):
         calls.append(prompt)
-        return f"{prefix}{len(calls)}"
+        n = len(calls)
+        # Directory prompts now ask for JSON; the stub has to answer in kind or
+        # the dir summaries stay empty and the test would pass for the wrong
+        # reason.
+        if '"topic"' in prompt:
+            return json.dumps({"topic": f"T{n}", "summary": f"{prefix}{n}"},
+                              ensure_ascii=False)
+        return f"{prefix}{n}"
 
     llm_mod.chat = fake
     try:
@@ -541,6 +550,94 @@ def test_fallback_uses_summary(tmp: Path) -> None:
     check("无关目录未被选中", "归档/B" not in picked and "杂项" not in picked)
 
 
+def test_scan_preserves_derived_fields(tmp: Path) -> None:
+    print("\n[scan() 必须继承所有「从内容派生」的字段]")
+    root = tmp / "preserve" / "corpus"
+    (root / "d").mkdir(parents=True)
+    (root / "d" / "a.md").write_text("# a\n\n## s\n\nbody\n", encoding="utf-8")
+
+    m1, _ = scan(root, {".md"}, set())
+    m1.dirs["d"].summary = "SUM"
+    m1.dirs["d"].topic = "TOPIC"
+    m2, _ = scan(root, {".md"}, set(), previous=m1)
+
+    # 这条断言的价值在于「新增派生字段时忘了加进 _dir()」——
+    # 症状不是报错，而是每次扫描都重算一遍，白花钱。
+    check("summary 被继承", m2.dirs["d"].summary == "SUM", m2.dirs["d"].summary)
+    check("topic 被继承", m2.dirs["d"].topic == "TOPIC", m2.dirs["d"].topic)
+    check("旧 manifest（无 topic 字段）仍可加载",
+          DirEntry(rel_path="x", name="x", parent=None).topic == "")
+
+
+def test_spread_sampling() -> None:
+    print("\n[_spread —— 采样而非截断]")
+    items = list(range(100))
+    got = _spread(items, 10)
+    check("数量正确", len(got) == 10, str(len(got)))
+    check("覆盖全范围而非前 10 个", got[0] == 0 and got[-1] >= 80, str(got[:3] + got[-2:]))
+    check("不足 limit 时原样返回", _spread([1, 2, 3], 10) == [1, 2, 3])
+    check("空列表安全", _spread([], 10) == [])
+
+
+def test_corpus_fingerprint(tmp: Path) -> None:
+    print("\n[语料指纹 —— 只在输入变化时才重建语料摘要]")
+    root = tmp / "fp" / "corpus"
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "x.md").write_text("# x\n\n## s\n\nbody\n", encoding="utf-8")
+    m, _ = scan(root, {".md"}, set())
+    f0 = corpus_fingerprint(m)
+    check("首次有指纹", bool(f0), f0)
+
+    check("无变化 → 指纹不变", corpus_fingerprint(m) == f0)
+
+    m.dirs["a"].summary = "新摘要"
+    f1 = corpus_fingerprint(m)
+    check("目录摘要变了 → 指纹变", f1 != f0, f"{f0} -> {f1}")
+
+    m.dirs["a"].topic = "新标签"
+    check("目录 topic 变了 → 指纹也变", corpus_fingerprint(m) != f1)
+
+    m.files["a/x.md"].summary = "文件摘要"
+    check("文件摘要变了 → 指纹变", corpus_fingerprint(m) != f1)
+
+
+def test_topic_in_routing_labels(tmp: Path) -> None:
+    print("\n[topic 用于路由标签]")
+    reg = new_registry(tmp / "topic")
+    src = make_corpus(tmp / "topic" / "src", "one", SAMPLE)
+    c = reg.add(str(src), name="c")
+    reg.index(c.id, summarize=False)
+    nav = reg.navigator([c.id])
+
+    d = nav.m.dirs[f"{c.id}/2024"]
+    d.topic = "2024 年报与中期业绩"
+    d.summary = "含新业务价值与股息"
+
+    with stubbed_chat() as calls:
+        import nav.llm as llm_mod
+        real = llm_mod.chat_json
+        captured = []
+        llm_mod.chat_json = lambda p, **kw: (captured.append(p), {"dirs": [0]})[1]
+        try:
+            nav._pick_dirs_from_tree("2024 年的股息", [d])
+        finally:
+            llm_mod.chat_json = real
+    prompt = captured[0] if captured else ""
+    check("路由 prompt 用了 topic 而不是目录名",
+          "2024 年报与中期业绩" in prompt, prompt[:100])
+    check("目录名仍然出现（供参考）",
+          "2024" in prompt)
+
+    # 打分也应认 topic（bigram 让中文真正能匹配上）
+    check("打分认 topic",
+          _score_candidate("友邦保险的股息", "x", "", [], "友邦保险年报与股息") > 0)
+    check("中文 bigram 生效：长句也能匹配上",
+          _score_candidate("友邦保险 2024 年的每股股息是多少？",
+                           "归档/A", "友邦保险年报，含每股股息", ["2024"]) >= 8,
+          str(_score_candidate("友邦保险 2024 年的每股股息是多少？",
+                               "归档/A", "友邦保险年报，含每股股息", ["2024"])))
+
+
 def main() -> int:
     print("=" * 74)
     print("Corpus registry tests（全部离线，不调用 LLM）")
@@ -552,6 +649,10 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_scan_preserves_derived_fields(tmp)
+        test_spread_sampling()
+        test_corpus_fingerprint(tmp)
+        test_topic_in_routing_labels(tmp)
         test_ancestor_dirs()
         test_dir_summary_carried_and_invalidated(tmp)
         test_score_candidate_prefers_summary()

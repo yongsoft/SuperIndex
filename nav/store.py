@@ -36,6 +36,10 @@ class DirEntry:
     child_dirs: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     summary: str = ""
+    # A short retrieval label generated from the contents. Folder names are
+    # often chosen for the organisation chart rather than for the documents
+    # inside, so routing shows this instead when it is available.
+    topic: str = ""
     n_files: int = 0          # recursive
     n_dirs: int = 0           # recursive
 

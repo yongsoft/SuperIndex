@@ -33,7 +33,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from extractors.backend import Extractor  # noqa: E402
-from nav.build import scan, summarize_chapters, summarize_files  # noqa: E402
+from nav.build import (corpus_fingerprint, corpus_summary,  # noqa: E402
+                       scan, summarize_chapters, summarize_files)
 from nav.store import Manifest  # noqa: E402
 
 DEFAULT_INCLUDES = {".md", ".markdown", ".txt", ".pdf"}
@@ -82,6 +83,8 @@ class Corpus:
     n_summarized: int = 0              # files carrying a description
     deep_index: bool = False           # chapter summaries enabled
     summarize_files: bool = True       # file descriptions enabled
+    summary: str = ""                  # content-derived, used for corpus routing
+    summary_fingerprint: str = ""      # the inputs `summary` was built from
     changes: dict = field(default_factory=dict)   # last detected change set
 
     @property
@@ -379,6 +382,18 @@ class Registry:
                                            self.workers, force)
                         m.save(index_dir)
 
+                    # Corpus-level description. When several corpora are in
+                    # scope this is the only content signal the router gets,
+                    # so it must not be a file count. Refreshed only when its
+                    # inputs moved — same rule as directory summaries.
+                    fp = corpus_fingerprint(m)
+                    if fp and (fp != c.summary_fingerprint or not c.summary):
+                        note("describing corpus")
+                        text = corpus_summary(m, self.model or _default_model())
+                        if text:
+                            c.summary = text
+                            c.summary_fingerprint = fp
+
                 c.n_files = len(m.files)
                 c.n_dirs = max(0, len(m.dirs) - 1)
                 c.n_chapters = sum(f.n_chapters for f in m.files.values())
@@ -558,7 +573,8 @@ class Registry:
         if not ready:
             raise ValueError("no indexed corpora in scope")
         return MultiNavigator(
-            [(c.id, c.index_dir, c.name, _corpus_summary(c)) for c in ready],
+            [(c.id, c.index_dir, c.name,
+              c.summary or _corpus_summary(c)) for c in ready],
             verbose=verbose)
 
 
@@ -599,6 +615,11 @@ def _prune_orphan_trees(index_dir: Path, m: Manifest) -> None:
 
 
 def _corpus_summary(c: Corpus) -> str:
+    """Counts only — the fallback when no content-derived summary exists yet.
+
+    `Corpus.summary` is what routing normally sees; this covers a corpus that
+    was indexed with descriptions off, where there is nothing to derive from.
+    """
     bits = [f"{c.n_files} files"]
     if c.n_dirs:
         bits.append(f"{c.n_dirs} subdirectories")

@@ -18,6 +18,7 @@ therefore cheap and safe.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -230,16 +231,21 @@ def scan(root: Path, includes: set[str], excludes: set[str],
     prev_dirs = previous.dirs if previous is not None else {}
 
     def _dir(rp: str, name: str, parent: Optional[str]) -> DirEntry:
-        """Build a DirEntry, carrying over the old summary.
+        """Build a DirEntry, carrying over everything derived from contents.
 
-        Directory summaries are derived from their children and cost an LLM
-        call each, so they are carried over exactly like file summaries.
-        Whether the carried-over one is still *accurate* is decided later, in
-        summarize_files() — see the staleness propagation there.
+        Both `summary` and `topic` cost an LLM call each, so they are carried
+        over exactly like file summaries. Whether the carried-over values are
+        still *accurate* is decided later, in summarize_files() — see the
+        staleness propagation there.
+
+        Every derived field must be listed here. Adding one to DirEntry and
+        forgetting this line makes it look "never generated" on every scan,
+        which silently re-spends the call each time.
         """
         old = prev_dirs.get(rp)
         return DirEntry(rel_path=rp, name=name, parent=parent,
-                        summary=old.summary if old else "")
+                        summary=old.summary if old else "",
+                        topic=old.topic if old else "")
 
     m.dirs[""] = DirEntry(rel_path="", name=root.name or "/", parent=None)
 
@@ -318,6 +324,71 @@ def _chapter_outline(chapters: list[Chapter], limit: int = 40) -> str:
     return "\n".join(out)
 
 
+def _spread(items: list, limit: int) -> list:
+    """Evenly spread sample instead of the first `limit` items.
+
+    Children are ordered by name, so `[:limit]` would describe only whatever
+    starts with "A" — on a 500-file directory that is not a summary of the
+    directory, it is a summary of one letter.
+    """
+    if len(items) <= limit:
+        return items
+    step = len(items) / limit
+    return [items[int(i * step)] for i in range(limit)]
+
+
+def _child_listing(m: Manifest, node, limit: int) -> str:
+    """`- topic-or-name: summary` lines, used as the prompt's evidence."""
+    kids = [m.dirs[c] for c in node.child_dirs] + [m.files[f] for f in node.files]
+    # Only directories carry a `topic`; files are labelled by name.
+    return "\n".join(
+        f"- {getattr(k, 'topic', '') or k.name}: {k.summary or '(无摘要)'}"
+        for k in _spread(kids, limit))
+
+
+def corpus_summary(m: Manifest, model: str) -> str:
+    """One description of the whole corpus, built from its top-level contents.
+
+    When several corpora are in scope the corpus name is the only semantic
+    signal the router gets, so it has to describe contents rather than repeat
+    a name somebody chose.
+    """
+    root = m.dirs.get("")
+    if root is None:
+        return ""
+    kids = [m.dirs[c] for c in root.child_dirs] + [m.files[f] for f in root.files]
+    if not kids:
+        return ""
+    prompt = (
+        "下面是一个文档库的顶层内容。用一句中文说明这个库**实际**包含什么，"
+        "便于判断某个问题该不该查它。只输出这句话，不要复述目录名。\n\n"
+        f"{_child_listing(m, root, 40)}"
+    )
+    try:
+        return llm.chat(prompt, model=model, max_tokens=400).strip()
+    except Exception as exc:  # noqa: BLE001
+        print(f"    ! 语料摘要失败: {exc}")
+        return ""
+
+
+def corpus_fingerprint(m: Manifest) -> str:
+    """Hash of everything `corpus_summary` is derived from.
+
+    Lets the caller regenerate the corpus summary only when its inputs moved,
+    the same way directory summaries are invalidated by their children.
+    """
+    root = m.dirs.get("")
+    if root is None:
+        return ""
+    h = hashlib.sha1()
+    for rp in sorted(root.child_dirs):
+        d = m.dirs[rp]
+        h.update(f"{rp}|{d.topic}|{d.summary}\n".encode("utf-8"))
+    for rp in sorted(root.files):
+        h.update(f"{rp}|{m.files[rp].summary}\n".encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
 def _ancestor_dirs(rel_path: str) -> list[str]:
     """`2024/annual/A.md` -> `["2024", "2024/annual"]`.
 
@@ -376,24 +447,38 @@ def summarize_files(m: Manifest, index_dir: Path, model: str, workers: int,
     for rp in changed_files:
         stale_dirs.update(_ancestor_dirs(rp))
 
+    # `not d.topic` covers the migration from before topics existed: a directory
+    # with a summary but no label gets one on the next pass, then stops matching.
     dirs_todo = [d for d in m.dirs.values()
                  if d.rel_path != "" and (force or not d.summary
+                                          or not d.topic
                                           or d.rel_path in stale_dirs)]
     dirs_todo.sort(key=lambda d: -d.rel_path.count("/"))
     stale_count = sum(1 for d in dirs_todo if d.summary)
     extra = f"，其中 {stale_count} 个因内容变化重建" if stale_count else ""
     print(f"  目录摘要: {len(dirs_todo)} 待生成{extra}")
     for i, d in enumerate(dirs_todo, 1):
-        kids = [m.dirs[c] for c in d.child_dirs] + [m.files[f] for f in d.files]
-        listing = "\n".join(f"- {k.name}: {k.summary or '(无摘要)'}" for k in kids[:60])
+        listing = _child_listing(m, d, 60)
+        # Content first, name last and marked as unreliable: folder names are
+        # chosen for the org chart, not for what ended up inside, and a name
+        # placed first anchors the model into repeating its framing.
         prompt = (
-            "用一句中文概括这个目录里都有什么内容，便于检索时判断是否相关。"
-            "只输出这句话。\n\n"
-            f"目录名: {d.name}\n共 {d.n_files} 个文件、{d.n_dirs} 个子目录\n"
-            f"直接内容:\n{listing}"
+            "下面是一个目录的直接内容。输出 JSON：\n"
+            '{"topic": "…", "summary": "…"}\n'
+            "- topic：不超过 18 字的检索标签，说明这个目录**实际**装的是什么\n"
+            "- summary：一句话（40 字内）概括内容，便于判断相关性\n"
+            "目录名可能不准确，一律以内容为准。只输出 JSON。\n\n"
+            f"直接内容（共 {d.n_files} 个文件、{d.n_dirs} 个子目录）:\n{listing}\n\n"
+            f"（仅供参考的目录名: {d.name}）"
         )
         try:
-            d.summary = llm.chat(prompt, model=model, max_tokens=400).strip()
+            ans = llm.chat_json(prompt, model=model, max_tokens=400)
+            if isinstance(ans, dict):
+                d.summary = str(ans.get("summary") or "").strip()
+                topic = str(ans.get("topic") or "").strip()[:24]
+                # Never leave it empty: an empty topic would look like "never
+                # generated" and be rebuilt on every pass.
+                d.topic = topic or d.summary[:24]
         except Exception as exc:  # noqa: BLE001
             print(f"    ! {d.rel_path}: {exc}")
         if i % 25 == 0 or i == len(dirs_todo):
