@@ -18,9 +18,23 @@ mkdir data/contracts && cp *.pdf data/contracts/
 | **没有可索引文件的目录跳过** | 空目录、只有 `.sh` 的目录不会产生空语料 |
 | **隐藏目录跳过** | `.git`、`.DS_Store` 之类 |
 | **只读** | 索引写到 `index/corpora/<id>/`，**不会写回 data/** |
-| **不入库** | `data/` 的内容是你的文档，不是仓库内容（见 `.gitignore`） |
 
 可索引的扩展名：`.md` `.markdown` `.txt` `.pdf`
+
+## 入库规则（**注意**）
+
+仓库里自带一份小的合成语料，所以**新克隆的人开箱即可演示**：
+
+```
+data/中国太保/   data/中国平安/   data/友邦保险/   data/行业汇总/
+```
+
+**只有 PDF 被 `.gitignore` 排除**（AIA 真实报告 27 MB，用
+`data/aia_reports/download.sh` 拉取）。其余内容会**正常入库**。
+
+> ⚠️ **不要把私密文档放进 `data/`** —— 它会被提交。
+> 私密或体积大的语料请放在项目外，用 Web UI 的「添加目录」注册
+> （注册表记绝对路径，索引照样写到 `index/`）。
 
 ## 换位置
 

@@ -262,9 +262,16 @@ data/
 └── aia_reports/       → corpus
 ```
 
-Folders with nothing indexable (only `.sh`, `.txt`-less, empty) are skipped, so
-a stray directory does not create an empty corpus. Everything under `data/` is
-**read-only** — indexes go to `index/`, never back into `data/`.
+A small synthetic corpus (`中国太保/`, `中国平安/`, `友邦保险/`, `行业汇总/`)
+ships with the repo, so a fresh clone is demo-ready. Folders with nothing
+indexable (empty, or only `.sh`) are skipped, so a stray directory does not
+create an empty corpus. Everything under `data/` is **read-only** — indexes go
+to `index/`, never back into `data/`.
+
+> Only PDFs are gitignored (the AIA reports are 27 MB; fetch them with
+> `data/aia_reports/download.sh`). **Anything else you drop into `data/` will be
+> committed** — keep private documents outside the repo and register them with
+> the directory browser instead.
 
 To index something outside `data/`, use **添加目录** in the UI — a read-only
 directory browser, which also opens at `data/` by default.

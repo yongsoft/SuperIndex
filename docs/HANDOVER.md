@@ -463,6 +463,8 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 - 隐藏目录与 `DEFAULT_EXCLUDES` 跳过
 - `data/` 只读 —— 索引写到 `index/corpora/`
 - `SUPERINDEX_DATA_DIR` 可换位置
+- **入库规则**：只有 PDF 被 gitignore；仓库自带合成语料（16 个 .md，76 KB）
+  让新克隆开箱可演示。其余内容会入库，所以私密文档不该放 `data/`
 
 **项目内注册规则的例外**：原来 `add()` 拒绝一切项目内路径。现在放行
 `DATA_ROOT` 及其子目录（因为索引不写回 `data/`），其余仍拒绝 ——
