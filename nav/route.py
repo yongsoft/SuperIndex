@@ -582,7 +582,12 @@ def display_path(rel_path: str, names: Optional[dict[str, str]] = None) -> str:
         return rel_path
     head, sep, tail = rel_path.partition("/")
     name = names.get(head)
-    return f"{name} / {tail}" if sep and name else rel_path
+    if not name:
+        return rel_path
+    # The bare corpus id is a valid value on its own — routing picks the corpus
+    # level before it picks anything inside it, so `a9e87d72` must render as the
+    # corpus name rather than leaking the id.
+    return f"{name} / {tail}" if sep else name
 
 
 def build_context(res: Result, nav: Navigator, *,
