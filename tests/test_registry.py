@@ -10,6 +10,7 @@ LLM is called. Fixtures are built in a temp directory, never in the repo.
 """
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 import tempfile
@@ -236,8 +237,30 @@ def test_multi_corpus(tmp: Path) -> None:
         check("选择未知语料时报错", "no indexed corpora" in str(exc))
 
 
+@contextlib.contextmanager
+def fake_data_root(path: Path):
+    """Point nav.registry.DATA_ROOT at a temp dir for one test.
+
+    Without this, any test that touches the watcher discovers the real data/
+    directory and starts indexing the user's own documents.
+    """
+    import nav.registry as reg_mod
+    path.mkdir(parents=True, exist_ok=True)
+    original = reg_mod.DATA_ROOT
+    reg_mod.DATA_ROOT = path
+    try:
+        yield path
+    finally:
+        reg_mod.DATA_ROOT = original
+
+
 def test_watcher_modes(tmp: Path) -> None:
     print("\n[watcher：检测模式与自动重建]")
+    with fake_data_root(tmp / "watch" / "data"):
+        _watcher_body(tmp)
+
+
+def _watcher_body(tmp: Path) -> None:
     reg = new_registry(tmp / "watch")
     src = make_corpus(tmp / "src", "watch", SAMPLE)
     # summarize_files_enabled=False keeps this test offline: the watcher honours
@@ -275,6 +298,60 @@ def test_watcher_modes(tmp: Path) -> None:
     reg.stop_watcher()
 
 
+def test_data_root_dropzone(tmp: Path) -> None:
+    print("\n[data/ 投放区：自动发现与注册]")
+    with fake_data_root(tmp / "dropzone" / "data") as fake_data:
+        reg = new_registry(tmp / "dropzone")
+
+        (fake_data / "empty").mkdir()
+        check("空目录被跳过", reg.discover_data_root() == [],
+              str(reg.discover_data_root()))
+
+        d1 = fake_data / "reports" / "2024"
+        d1.mkdir(parents=True)
+        (d1 / "a.md").write_text("# A\n\n## S\n\nbody\n", encoding="utf-8")
+        check("发现含文件的子目录",
+              [p.name for p in reg.discover_data_root()] == ["reports"],
+              str([p.name for p in reg.discover_data_root()]))
+
+        d2 = fake_data / "scans"
+        d2.mkdir()
+        (d2 / "x.pdf").write_bytes(b"%PDF-1.4\n")
+        check("PDF 也算可索引",
+              sorted(p.name for p in reg.discover_data_root()) == ["reports", "scans"],
+              str(sorted(p.name for p in reg.discover_data_root())))
+
+        d3 = fake_data / "scripts_only"
+        d3.mkdir()
+        (d3 / "run.sh").write_text("echo hi\n", encoding="utf-8")
+        check("只有 .sh 的目录被跳过",
+              "scripts_only" not in [p.name for p in reg.discover_data_root()])
+
+        (fake_data / ".hidden").mkdir()
+        (fake_data / ".hidden" / "x.md").write_text("# x\n", encoding="utf-8")
+        check("隐藏目录被跳过",
+              ".hidden" not in [p.name for p in reg.discover_data_root()])
+
+        added = reg.sync_data_root(index=False)
+        check("sync 自动注册",
+              sorted(c.name for c in added) == ["reports", "scans"],
+              str(sorted(c.name for c in added)))
+        check("sync 是幂等的", reg.sync_data_root(index=False) == [])
+
+        extra = fake_data / "extra"
+        extra.mkdir()
+        c = reg.add(str(extra))
+        check("data/ 内的目录允许注册", c.name == "extra")
+
+        for bad, label in [(ROOT / "nav", "项目内非 data/ 目录"),
+                           (ROOT, "项目根")]:
+            try:
+                reg.add(str(bad))
+                check(f"{label}仍拒绝", False, "未报错")
+            except ValueError as exc:
+                check(f"{label}仍拒绝", "inside the project" in str(exc))
+
+
 def main() -> int:
     print("=" * 74)
     print("Corpus registry tests（全部离线，不调用 LLM）")
@@ -286,6 +363,7 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_data_root_dropzone(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print()

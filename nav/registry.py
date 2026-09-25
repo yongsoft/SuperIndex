@@ -49,6 +49,10 @@ CORPORA_ROOT = INDEX_ROOT / "corpora"
 PAGEINDEX_STORE = INDEX_ROOT / "pageindex"
 TREES_ROOT = INDEX_ROOT / "trees"
 
+# The default place to put documents. Each immediate subdirectory becomes a
+# corpus automatically, so dropping a folder in here is the whole workflow.
+DATA_ROOT = Path(os.getenv("SUPERINDEX_DATA_DIR") or (ROOT / "data"))
+
 STATUS_PENDING = "pending"
 STATUS_INDEXING = "indexing"
 STATUS_READY = "ready"
@@ -180,10 +184,13 @@ class Registry:
         if not p.is_dir():
             raise ValueError(f"not a directory: {p}")
         p = p.resolve()
-        if p == ROOT or ROOT in p.parents:
+        if _inside(p, ROOT) and not _inside(p, DATA_ROOT):
             # Indexing our own tree would pull in PageIndex/, .venv/ and index/
-            # and recurse into whatever index it is building.
-            raise ValueError("cannot register a directory inside the project")
+            # and recurse into whatever index it is building. The data/ drop
+            # zone is the one exception: indexes go to index/, not into data/.
+            raise ValueError(
+                f"cannot register a directory inside the project "
+                f"(put it under {DATA_ROOT.name}/ instead)")
         existing = self.find_by_path(p)
         if existing is not None:
             raise ValueError(f"already registered as {existing.name!r}")
@@ -222,6 +229,49 @@ class Registry:
         return c
 
     # ── change detection ─────────────────────────────────────────────────
+    # ── the data/ drop zone ──────────────────────────────────────────────
+    def discover_data_root(self) -> list[Path]:
+        """Immediate subdirectories of DATA_ROOT that hold indexable files.
+
+        A folder with nothing indexable is skipped, so an empty placeholder or
+        a stray directory does not create an empty corpus.
+        """
+        root = DATA_ROOT
+        if not root.is_dir():
+            return []
+        out: list[Path] = []
+        for child in sorted(root.iterdir(), key=lambda x: x.name.lower()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if child.name in DEFAULT_EXCLUDES:
+                continue
+            try:
+                if _has_indexable(child):
+                    out.append(child.resolve())
+            except OSError:
+                continue
+        return out
+
+    def sync_data_root(self, *, index: bool = True) -> list[Corpus]:
+        """Register every new subdirectory of DATA_ROOT and start indexing it.
+
+        This is what makes "drop a folder into data/ and it gets indexed" true.
+        Already-registered directories are left alone — their own watcher deals
+        with content changes.
+        """
+        fresh: list[Corpus] = []
+        for path in self.discover_data_root():
+            if self.find_by_path(path) is not None:
+                continue
+            try:
+                fresh.append(self.add(str(path)))
+            except ValueError:
+                continue
+        if index:
+            for c in fresh:
+                self.index_async(c.id)
+        return fresh
+
     def detect_changes(self, cid: str) -> dict:
         """Stat-only diff against the stored index. Cheap enough to poll.
 
@@ -381,6 +431,12 @@ class Registry:
         def loop() -> None:
             while not self._stop.is_set():
                 try:
+                    # New folder dropped into data/? Register and index it.
+                    if auto_index:
+                        try:
+                            self.sync_data_root()
+                        except Exception:  # noqa: BLE001
+                            pass
                     for c in self.list():
                         if self._stop.is_set():
                             break
@@ -448,6 +504,22 @@ class Registry:
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+def _inside(path: Path, base: Path) -> bool:
+    """True if `path` is `base` or sits underneath it."""
+    return path == base or base in path.parents
+
+
+def _has_indexable(root: Path) -> bool:
+    """True if the tree contains at least one file we would actually index."""
+    for p in root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in DEFAULT_INCLUDES:
+            continue
+        if set(p.relative_to(root).parts) & DEFAULT_EXCLUDES:
+            continue
+        return True
+    return False
+
+
 def _has_pdf(root: Path) -> bool:
     for p in root.rglob("*.pdf"):
         if not (set(p.relative_to(root).parts) & DEFAULT_EXCLUDES):

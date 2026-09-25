@@ -14,6 +14,18 @@ PageIndex/assets/
 PageIndex/cookbook/
 PageIndex/tests/
 
+# ─── document drop zone ────────────────────────────────────────────────────
+# data/ is the default document root. Every immediate subdirectory becomes a
+# corpus automatically, so its contents are *your documents*, not repo content.
+# Only the folder itself, its README, and the download scripts are tracked.
+data/*
+!data/.gitkeep
+!data/README.md
+!data/aia_reports/
+data/aia_reports/*
+!data/aia_reports/download.sh
+!data/aia_reports/download_interim.sh
+
 # ─── source PDFs ───────────────────────────────────────────────────────────
 # ~27 MB, fetched by data/aia_reports/download.sh (README §0).
 # Matched at any depth: the reports live under data/aia_reports/ after the

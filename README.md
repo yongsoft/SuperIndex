@@ -102,8 +102,11 @@ Every answer is traceable to a file and a page.
 `webapp/` is a browser UI over everything above — no build step, no Node, no
 frontend framework, just a stdlib HTTP server and one HTML file.
 
-- **Add directories from the browser.** A read-only directory picker walks the
-  server's filesystem; you never type a path.
+- **Drop a folder in, it gets indexed.** `data/` is the default document root:
+  every immediate subdirectory becomes a corpus automatically, and new folders
+  are picked up by the watcher. No registration step, no path to type.
+- **Add directories from the browser.** For anything outside `data/`, a
+  read-only directory picker walks the filesystem.
 - **Watch indexing happen.** Each corpus shows its own status, current stage,
   and file / directory / chapter counts. Indexing runs in the background, so the
   UI stays responsive.
@@ -136,13 +139,13 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**53 assertions** across the extraction, navigation and registry layers, with no
+**120 assertions** across the extraction, navigation and registry layers, with no
 network and no credentials required:
 
 ```bash
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
 python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
-python tests/test_registry.py    # 57 assertions — registry, change detection, watcher
+python tests/test_registry.py    # 67 assertions — registry, change detection, watcher, drop zone
 ```
 
 `test_backend.py` reports 27 once the sample PDFs are present; without them the
@@ -240,7 +243,34 @@ python webapp/server.py --no-watch           # do not poll for file changes
 python webapp/server.py --watch-interval 10  # poll every 10s instead of 30s
 ```
 
-Then, in the browser: **添加目录** → pick a directory → wait for `ready` → ask.
+### Just drop documents into `data/`
+
+`data/` is the default document root. **Each immediate subdirectory becomes a
+corpus automatically** — the server registers it on startup, and the watcher
+picks up new folders within one poll interval (30s by default):
+
+```bash
+cp -r ~/Documents/2024-filings   data/       # → indexed automatically
+mkdir data/contracts && cp *.pdf data/contracts/
+```
+
+```
+data/
+├── 中国太保/           → corpus
+├── 友邦保险/           → corpus
+├── contracts/         → corpus (added later, picked up by the watcher)
+└── aia_reports/       → corpus
+```
+
+Folders with nothing indexable (only `.sh`, `.txt`-less, empty) are skipped, so
+a stray directory does not create an empty corpus. Everything under `data/` is
+**read-only** — indexes go to `index/`, never back into `data/`.
+
+To index something outside `data/`, use **添加目录** in the UI — a read-only
+directory browser, which also opens at `data/` by default.
+
+`SUPERINDEX_DATA_DIR` moves the drop zone; `SUPERINDEX_INDEX_DIR` moves the
+index store.
 
 A question can also be deep-linked, which is handy for sharing:
 

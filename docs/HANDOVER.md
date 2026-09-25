@@ -182,7 +182,9 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 .
 ├── PageIndex/                 上游引擎 vendored 副本，editable 安装，勿改
 │   └── UPSTREAM.md            来源/commit/剥掉了什么/怎么更新 ★ 必读
-├── data/aia_reports/          10 份 AIA 报告 PDF（27 MB）
+├── data/                      ★ 默认文档根目录（**投放区**，只读）
+│   ├── aia_reports/             10 份 AIA 报告 PDF（27 MB，download.sh 拉取）
+│   └── <任意子目录>/            ★ 每个直接子目录自动成为语料并索引
 ├── README.md                  项目主文档
 │
 ├── scripts/                   实验与诊断脚本
@@ -229,7 +231,6 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── aia_ar2021_excerpt.md      规范的 markdown 样例
 │   ├── bad_no_headings.md         无标题的坏样例
 │   ├── bad_ppt_derived.md         PPT 转出的坏样例
-│   ├── test_corpus/               16 文件 / 29 目录的合成语料
 │   └── test_index/                已建好的 nav 索引（带摘要，可直接查）
 │
 ├── index/                     ★ 集中索引库（构建产物，gitignore）
@@ -410,12 +411,13 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 - `docs/dify-improvement-plan.md` — Dify 改造方案
 - `.env.example` — 新增 Azure DI 完整配置段（含各项取值说明）
 
-### 5.7 测试素材（新增）
+### 5.8 测试素材（新增）
 
-- `samples/test_corpus/` — 16 文件 / 29 目录 / 228 章节节点的合成语料
+- `data/` 下的合成语料 — 16 文件 / 29 目录 / 228 章节节点（已从 `samples/test_corpus/`
+  移入 `data/`，作为投放区的实际用例；`samples/test_index/` 是它的预建索引）
 - `samples/test_index/` — 已建好且**带 LLM 摘要**的索引，可直接查询验证
 
-### 5.8 `nav/registry.py` —— 多语料注册表与监控（新增）
+### 5.9 `nav/registry.py` —— 多语料注册表与监控（新增）
 
 把 `nav` 从「一次性 CLI」变成 UI 能驱动的东西。
 
@@ -442,7 +444,37 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 其他：目录消失 → `error` + 可读信息；`_prune_orphan_trees()` 清理已删文件的
 章节树，否则删除不回收磁盘。
 
-### 5.9 `nav/route.py` 的多语料支持（新增）
+### 5.10 `data/` 投放区（新增）
+
+**往 `data/` 下丢目录就会被自动索引**，不需要注册步骤。
+
+| 环节 | 实现 |
+|---|---|
+| 发现 | `Registry.discover_data_root()`：扫 `data/` 的直接子目录 |
+| 注册+索引 | `Registry.sync_data_root()`：未注册的自动 `add()` + `index_async()` |
+| 启动时同步 | `webapp/server.py` 的 `main()` 里调用一次 |
+| 运行中同步 | watcher 每轮调用一次 → 新目录一个周期内自动进来 |
+| 默认浏览起点 | `/api/browse` 与 UI 目录浏览器默认打开 `DATA_ROOT` |
+
+**规则**：
+- 每个**直接子目录**是一个语料（不是整个 `data/` 当一个语料）
+- 没有任何可索引文件（空目录、只有 `.sh`）→ `_has_indexable()` 跳过，
+  不产生空语料
+- 隐藏目录与 `DEFAULT_EXCLUDES` 跳过
+- `data/` 只读 —— 索引写到 `index/corpora/`
+- `SUPERINDEX_DATA_DIR` 可换位置
+
+**项目内注册规则的例外**：原来 `add()` 拒绝一切项目内路径。现在放行
+`DATA_ROOT` 及其子目录（因为索引不写回 `data/`），其余仍拒绝 ——
+`_inside(p, ROOT) and not _inside(p, DATA_ROOT)`。
+
+**顺手修掉的两件事**：
+1. `download.sh` 原来写**当前工作目录**，从仓库根跑就会把 PDF 撒在 `data/` 下
+   —— 已加 `cd "$(dirname "$0")"`，现在总是落在 `data/aia_reports/`
+2. 两份游离在 `data/` 根下的 PDF 已移回 `data/aia_reports/`，
+   5 个脚本的 `DATA_DIR` 现在能找到它们了
+
+### 5.11 `nav/route.py` 的多语料支持（新增）
 
 - `merge_manifests()` —— 把 N 个语料合并成一棵路由树，每个语料是顶层伪目录，
   rel_path 加 `<corpus_id>/` 前缀。**第 1 级仍是一次调用**，且模型能跨语料
@@ -451,8 +483,6 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 - `build_context()` / `answer_prompt()` —— 按相关性截断（预算内取满），
   避免长尾章节挤掉最相关的那个
 - `Navigator._load_tree()` 抽成可覆写方法（原来两处硬编码 `self.m.load_tree`）
-
-### 5.10 测试素材（新增）
 
 ---
 
@@ -626,10 +656,10 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（110 条断言，不联网，约 10 秒）
+# 5. 跑离线测试（120 条断言，不联网，约 15 秒）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
 $PY -u tests/test_backend.py      # 25 条：后端解析/按页切分/PageIndex 接管
-$PY -u tests/test_registry.py     # 57 条：注册表/变更检测/watcher（自建临时夹具）
+$PY -u tests/test_registry.py     # 67 条：注册表/变更检测/watcher/投放区
 #   注：下载样例 PDF 后 test_backend 会多 2 条（27 条）
 
 # 6. 检查 Azure DI 配置（未配 key 会给出可操作的报错，这是预期的）

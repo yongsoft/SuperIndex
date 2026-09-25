@@ -45,7 +45,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 from nav import llm  # noqa: E402
-from nav.registry import Registry  # noqa: E402
+from nav.registry import DATA_ROOT, Registry  # noqa: E402
 from nav.route import Result, build_context, answer_prompt  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -146,10 +146,11 @@ class Handler(BaseHTTPRequestHandler):
                 "chat_model": llm.DEFAULT_MODEL,
                 "reasoning_effort": REASONING_EFFORT,
                 "home": str(Path.home()),
+                "data_root": str(DATA_ROOT),
             })
         elif path == "/api/browse":
             q = parse_qs(url.query)
-            self._json(browse(q.get("path", [str(Path.home())])[0]))
+            self._json(browse(q.get("path", [str(DATA_ROOT)])[0]))
         elif path == "/api/health":
             self._json({"ok": True})
         elif path.startswith("/static/"):
@@ -303,7 +304,7 @@ def browse(raw: str) -> dict:
     server binds to 127.0.0.1 by default.
     """
     if not raw:
-        raw = str(Path.home())
+        raw = str(DATA_ROOT)
     p = Path(raw).expanduser()
     try:
         p = p.resolve()
@@ -345,6 +346,13 @@ def main() -> int:
     reg = registry()
     print("SuperIndex web UI")
     print(f"  model        : {llm.DEFAULT_MODEL}")
+    print(f"  data root    : {DATA_ROOT}")
+
+    # Anything already sitting in data/ becomes a corpus on startup.
+    fresh = reg.sync_data_root()
+    if fresh:
+        print(f"  discovered   : {', '.join(c.name for c in fresh)}")
+
     print(f"  corpora      : {len(reg.list())} registered, "
           f"{sum(1 for c in reg.list() if c.ready)} ready")
 
