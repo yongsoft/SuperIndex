@@ -38,6 +38,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nav import llm  # noqa: E402
+from nav.debuglog import error as log_error  # noqa: E402
 from nav.store import Chapter, DirEntry, FileEntry, Manifest  # noqa: E402
 
 DIR_TREE_BUDGET = 240        # dirs shown at once in level 1
@@ -143,19 +144,24 @@ class Navigator:
             "你在一个多级目录的知识库里定位文件所在的目录。只输出 JSON。\n\n"
             f"用户问题: {question}{hint}\n\n"
             f"目录树（{len(dirs)} 个目录，缩进表示层级）:\n{listing}\n\n"
-            "任务：选出最可能包含答案的目录编号（D 开头）。\n"
+            "任务：选出最可能包含答案的目录编号。\n"
             "规则：\n"
             "- 选最具体的目录：能直接定位到文件所在的那一层\n"
             "- 选 1-4 个，按相关性排序\n"
             "- **必须至少选 1 个**，从最相关的开始，不要留空\n"
             "- 年份、公司名、报告期必须与问题一致\n\n"
-            '输出: {"dirs": [0, 3]}'
+            '编号只写数字，不要带 D/F 前缀。输出: {"dirs": [0, 3]}'
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
                                 max_tokens=TOKENS_ROUTE)
             idxs = [i for i in _ints(ans.get("dirs")) if 0 <= i < len(ids)]
         except Exception as exc:  # noqa: BLE001
+            # Log it as well as printing: the server runs with verbose=False,
+            # so without this the only visible symptom is "模型未选中" and the
+            # actual reason (bad JSON, rate limit, truncation) is lost.
+            log_error(exc, where="route.dirs", question=question,
+                      dirs=len(dirs), prompt_chars=len(prompt))
             self._say(f"  ! 目录选择失败: {exc}")
             idxs = []
         picked = [ids[i] for i in idxs]
@@ -199,10 +205,10 @@ class Navigator:
                 f"用户问题: {question}\n当前目录: {where}\n\n"
                 f"当前内容:\n" + "\n".join(lines) + "\n\n"
                 "规则：\n"
-                "- descend: 要展开的子目录编号（D 开头），1-3 个\n"
-                "- pick: 直接选中的文件编号（F 开头），最多 5 个\n"
+                "- descend: 要展开的子目录编号，1-3 个（只写数字）\n"
+                "- pick: 直接选中的文件编号，最多 5 个（只写数字）\n"
                 "- 若本层有文件且相关，优先 pick；否则必须 descend，不要留空\n\n"
-                '输出: {"descend": [0], "pick": []}'
+                '编号只写数字，不要带 D/F 前缀。输出: {"descend": [0], "pick": []}'
             )
             try:
                 ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
@@ -288,18 +294,20 @@ class Navigator:
             "你在从候选文件里挑出最可能包含答案的。只输出 JSON。\n\n"
             f"用户问题: {question}{hint}\n\n"
             f"候选文件（{len(pool)} 个）:\n" + "\n".join(lines) + "\n\n"
-            "任务：选出最相关的文件编号（F 开头）。\n"
+            "任务：选出最相关的文件编号。\n"
             "规则：\n"
             f"- 选 1-{min(top_n, len(pool))} 个，按相关性排序\n"
             "- **必须至少选 1 个**，不要留空\n"
             "- 报告期（年度/中期）与年份必须和问题一致\n\n"
-            '输出: {"files": [0, 2]}'
+            '编号只写数字。输出: {"files": [0, 2]}'
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
                                 max_tokens=TOKENS_SECTION)
             idxs = [i for i in _ints(ans.get("files")) if 0 <= i < len(pool)]
         except Exception as exc:  # noqa: BLE001
+            log_error(exc, where="route.files", question=question,
+                      candidates=len(pool))
             self._say(f"  ! 文件选择失败: {exc}")
             idxs = []
         picked = [pool[i] for i in idxs[:top_n]]
@@ -358,13 +366,15 @@ class Navigator:
             f"- 选 1-{top_n} 个，按相关性排序\n"
             "- **必须至少选 1 个**，不要留空\n"
             "- 涉及具体数值时，优先含表格或数字明细的章节\n\n"
-            '输出: {"sections": [3, 7]}'
+            '编号只写数字。输出: {"sections": [3, 7]}'
         )
         try:
             ans = llm.chat_json(prompt, model=self.model, effort=self.effort,
                                 max_tokens=TOKENS_SECTION)
             idxs = [i for i in _ints(ans.get("sections")) if 0 <= i < len(flat)]
         except Exception as exc:  # noqa: BLE001
+            log_error(exc, where="route.sections", question=question,
+                      file=fe.rel_path)
             self._say(f"  ! 章节定位失败 ({fe.name}): {exc}")
             idxs = []
         chosen = [flat[i][0] for i in idxs[:top_n]]
@@ -543,20 +553,33 @@ def answer_prompt(question: str, context: str) -> str:
 
 
 def _ints(value: Any) -> list[int]:
-    if value is None:
-        return []
-    if isinstance(value, bool):
+    """Coerce a model's index list into ints, tolerating the label prefixes.
+
+    Prompts label candidates `[D0]`, `[F3]`, `[S1]`… and models write those
+    prefixes back. Both a bare `"D8"` and a list `["D8", "D9"]` must yield 8 and
+    9 — the single-string branch alone is not enough, and that gap is exactly
+    how a perfectly good reply used to collapse into an empty selection.
+    """
+    if value is None or isinstance(value, bool):
         return []
     if isinstance(value, int):
         return [value]
     if isinstance(value, str):
         return [int(m) for m in re.findall(r"\d+", value)]
-    out = []
+
+    out: list[int] = []
     for v in value:
-        try:
-            out.append(int(v))
-        except (TypeError, ValueError):
+        if isinstance(v, bool):
             continue
+        if isinstance(v, int):
+            out.append(v)
+        elif isinstance(v, str):
+            out.extend(int(m) for m in re.findall(r"\d+", v))
+        else:
+            try:
+                out.append(int(v))
+            except (TypeError, ValueError):
+                continue
     return out
 
 

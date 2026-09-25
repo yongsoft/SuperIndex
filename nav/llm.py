@@ -38,11 +38,35 @@ def _litellm():
     return litellm
 
 
+def _quote_bare_tokens(body: str) -> str:
+    """`{"dirs": [D8, D9]}` -> `{"dirs": ["D8", "D9"]}`.
+
+    Routing prompts label candidates `[D0]`, `[D1]`, `[F3]`… and models routinely
+    echo the prefix, emitting a bare identifier where JSON wants a string. That
+    is a perfectly good answer in the wrong syntax — discarding it and falling
+    back to keyword matching loses real quality, so quote it instead.
+
+    Only tokens in *value* position are touched: the match starts at `[` or `,`,
+    so object keys (which follow `{` or `:`) are left alone. `true` / `false` /
+    `null` are left alone too.
+    """
+    keep = {"true", "false", "null"}
+
+    def repl(m: "re.Match[str]") -> str:
+        token = m.group(2)
+        if token.lower() in keep:
+            return m.group(0)
+        return f'{m.group(1)}"{token}"'
+
+    return re.sub(r'([\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)', repl, body)
+
+
 def extract_json(text: str) -> Optional[Any]:
     """Pull the first JSON value out of a model reply.
 
-    Models wrap JSON in prose or fences; some emit trailing commas. Try the
-    text as-is, then a fence-stripped slice, then a comma-repaired variant.
+    Models wrap JSON in prose or fences, leave trailing commas, and emit bare
+    identifiers where a string is expected. Each repair is tried in turn; the
+    first that parses wins.
     """
     if not text or not text.strip():
         return None
@@ -57,9 +81,14 @@ def extract_json(text: str) -> Optional[Any]:
     if end <= start:
         return None
     body = t[start:end + 1]
+    tight = " ".join(body.split())
+    no_trailing = re.sub(r",(\s*[\]}])", r"\1", body)
     for candidate in (body,
-                      " ".join(body.split()),
-                      re.sub(r",(\s*[\]}])", r"\1", body)):
+                      tight,
+                      no_trailing,
+                      _quote_bare_tokens(body),
+                      _quote_bare_tokens(tight),
+                      _quote_bare_tokens(no_trailing)):
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:

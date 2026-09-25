@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nav import llm  # noqa: E402
+from nav.route import _ints  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -164,6 +165,42 @@ def test_stream_fallback_gets_more_room() -> None:
               str([c["max_tokens"] for c in stub.calls]))
 
 
+def test_json_bare_identifiers() -> None:
+    print("\n[模型回显标签前缀 → JSON 修复]")
+    from nav.llm import extract_json
+
+    cases = [
+        ('{"dirs": [D8, D9, D5, D6]}', ["D8", "D9", "D5", "D6"], "真实失败样本"),
+        ('{"dirs": ["D8", "D9"]}',     ["D8", "D9"],             "已是字符串"),
+        ('{"dirs": [8, 9]}',           [8, 9],                   "正常数字"),
+        ('{"files": [F0, F2]}',        ["F0", "F2"],             "F 前缀"),
+        ('```json\n{"sections": [S1]}\n```', ["S1"],           "围栏 + S 前缀"),
+        ('{"dirs": [D8, D9,]}',        ["D8", "D9"],             "尾随逗号"),
+    ]
+    for raw, want, label in cases:
+        got = extract_json(raw)
+        key = next(k for k in ("dirs", "files", "sections") if k in (got or {}))
+        check(f"解析 {label}", (got or {}).get(key) == want, str(got))
+
+    check("true/false/null 不被加引号",
+          extract_json('{"a": [true, false], "b": null}') == {"a": [True, False], "b": None})
+    check("对象键不被误改",
+          extract_json('{"dirs": [D1]}') == {"dirs": ["D1"]})
+    check("空数组仍可解析", extract_json('{"dirs": []}') == {"dirs": []})
+
+
+def test_ints_tolerates_prefixes() -> None:
+    print("\n[_ints 容忍 D/F/S 前缀与字符串列表]")
+    check("裸字符串", _ints("D8") == [8], str(_ints("D8")))
+    check("字符串列表（原来会全丢）", _ints(["D8", "D9"]) == [8, 9],
+          str(_ints(["D8", "D9"])))
+    check("混合类型", _ints([8, "D9", "10"]) == [8, 9, 10], str(_ints([8, "D9", "10"])))
+    check("正常数字", _ints([0, 3]) == [0, 3])
+    check("None → []", _ints(None) == [])
+    check("bool 被忽略", _ints([True, 2]) == [2], str(_ints([True, 2])))
+    check("不可解析的项跳过", _ints(["x", 1, None]) == [1], str(_ints(["x", 1, None])))
+
+
 def main() -> int:
     print("=" * 74)
     print("LLM 重试与预算升级测试（stub 掉 litellm，不联网）")
@@ -174,6 +211,8 @@ def main() -> int:
     test_exhausted_raises_with_detail()
     test_transport_error_retries_unchanged()
     test_stream_fallback_gets_more_room()
+    test_json_bare_identifiers()
+    test_ints_tolerates_prefixes()
     print()
     print("=" * 74)
     print(f"  通过 {len(PASS)}  失败 {len(FAIL)}")
