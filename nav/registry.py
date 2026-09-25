@@ -26,16 +26,20 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if TYPE_CHECKING:                       # annotations are lazy; no runtime cost
+    from nav.policy import RoutingPolicy
+
 from extractors.backend import Extractor  # noqa: E402
 from nav.build import (corpus_fingerprint, corpus_summary,  # noqa: E402
                        scan, summarize_chapters, summarize_files)
 from nav.store import Manifest  # noqa: E402
+from nav.suggest import corpus_suggestions  # noqa: E402
 
 DEFAULT_INCLUDES = {".md", ".markdown", ".txt", ".pdf"}
 DEFAULT_EXCLUDES = {".git", "node_modules", "__pycache__", ".venv", "venv",
@@ -87,6 +91,11 @@ class Corpus:
     summarize_files: bool = True       # file descriptions enabled
     summary: str = ""                  # content-derived, used for corpus routing
     summary_fingerprint: str = ""      # the inputs `summary` was built from
+    # Example questions this corpus can answer, shown as chips above the input
+    # box. Cached like `summary`, and for the same reason: it costs a call, and
+    # regenerating it on every page load would be absurd.
+    suggestions: list[str] = field(default_factory=list)
+    suggestions_fingerprint: str = ""  # inputs `suggestions` was built from
     changes: dict = field(default_factory=dict)   # last detected change set
 
     @property
@@ -129,6 +138,11 @@ class Registry:
         self._stop = threading.Event()
         self._watcher: Optional[threading.Thread] = None
         self._workers_busy: set[str] = set()
+        # Example-question backfill: one worker at a time, and a record of what
+        # has already been attempted so a corpus that legitimately yields no
+        # questions is not retried on every page load.
+        self._sugg_busy = False
+        self._sugg_done: set[str] = set()
         self.load()
 
     # ── persistence ──────────────────────────────────────────────────────
@@ -396,6 +410,20 @@ class Registry:
                             c.summary = text
                             c.summary_fingerprint = fp
 
+                    # Example questions. Same invalidation rule as the summary,
+                    # plus the display name — a rename should regenerate them,
+                    # since the questions name the corpus.
+                    sfp = _suggestions_fingerprint(fp, c.name)
+                    if sfp and (force or sfp != c.suggestions_fingerprint
+                                or not c.suggestions):
+                        note("writing example questions")
+                        qs = corpus_suggestions(
+                            m, index_dir, self.model or _default_model(),
+                            name=c.name, summary=c.summary)
+                        if qs:
+                            c.suggestions = qs
+                            c.suggestions_fingerprint = sfp
+
                 c.n_files = len(m.files)
                 c.n_dirs = max(0, len(m.dirs) - 1)
                 c.n_chapters = sum(f.n_chapters for f in m.files.values())
@@ -410,6 +438,69 @@ class Registry:
                 c.stage = ""
             self.save()
         return c
+
+    def ensure_suggestions(self, corpus_ids: Optional[list[str]] = None,
+                           *, force: bool = False) -> list[str]:
+        """Backfill example questions for corpora that do not have them yet.
+
+        Why this exists separately from `index()`: `index()` only runs when a
+        file changed, so a corpus indexed *before* this feature existed would
+        show no chips until somebody happened to touch a document. That is
+        exactly the state of every existing deployment after an upgrade, and it
+        looks like a bug rather than a missing cache entry.
+
+        Returns the ids it started working on. Runs in the background and is
+        safe to call on every page load: a corpus already being processed, or
+        already done, is skipped. A corpus registered without descriptions is
+        skipped too — the manifest has nothing to derive questions from, and
+        its owner has explicitly opted out of LLM calls.
+        """
+        with self._lock:
+            if self._sugg_busy:
+                return []
+            todo = [
+                c for c in self._corpora.values()
+                if c.ready and c.summarize_files and not c.missing
+                and (force or not c.suggestions)
+                and c.id not in self._sugg_done
+                and (not corpus_ids or c.id in set(corpus_ids))
+            ]
+            if not todo:
+                return []
+            self._sugg_busy = True
+            ids = [c.id for c in todo]
+
+        def run() -> None:
+            try:
+                for cid in ids:
+                    self.refresh_suggestions(cid, force=force)
+            finally:
+                with self._lock:
+                    self._sugg_busy = False
+                    self._sugg_done.update(ids)
+
+        threading.Thread(target=run, name="suggestions", daemon=True).start()
+        return ids
+
+    def refresh_suggestions(self, cid: str, *, force: bool = False) -> list[str]:
+        """Generate one corpus's example questions. Never raises."""
+        c = self.get(cid)
+        if c is None or not c.ready:
+            return []
+        try:
+            m = Manifest.load(c.index_path)
+            qs = corpus_suggestions(
+                m, c.index_path, self.model or _default_model(),
+                name=c.name, summary=c.summary)
+        except Exception as exc:  # noqa: BLE001 - chips are cosmetic
+            print(f"    ! 示例问题生成失败 ({c.name}): {exc}")
+            return []
+        if qs:
+            c.suggestions = qs
+            c.suggestions_fingerprint = _suggestions_fingerprint(
+                corpus_fingerprint(m), c.name)
+            self.save()
+        return qs
 
     def index_async(self, cid: str, **kwargs) -> threading.Thread:
         """Kick off indexing without blocking the HTTP request."""
@@ -559,12 +650,17 @@ class Registry:
         }
 
     def navigator(self, corpus_ids: Optional[list[str]] = None,
-                  *, verbose: bool = False):
+                  *, verbose: bool = False,
+                  policy: Optional["RoutingPolicy"] = None):
         """A MultiNavigator over the selected corpora.
 
         Only `ready` corpora are eligible; if nothing is selected, every ready
         corpus is used, which is what makes "indexed corpora are automatically
         in scope" true without the UI having to say so.
+
+        `policy` defaults to the business routing policy on disk
+        (`config/routing_policy.yaml`). Pass one to override, or
+        `RoutingPolicy()` to run this query with the policy switched off.
         """
         from nav.route import MultiNavigator
 
@@ -577,10 +673,22 @@ class Registry:
         return MultiNavigator(
             [(c.id, c.index_dir, c.name,
               c.summary or _corpus_summary(c)) for c in ready],
-            verbose=verbose)
+            verbose=verbose, policy=policy)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+def _suggestions_fingerprint(content_fp: str, name: str) -> str:
+    """Content fingerprint + display name.
+
+    The name is part of the inputs because the generated questions name the
+    corpus ("友邦保险 2024 年的 VONB 是多少？"). Renaming a corpus without
+    regenerating would leave chips that talk about the old name.
+    """
+    if not content_fp:
+        return ""
+    return f"{content_fp}|{name}"
+
+
 def _inside(path: Path, base: Path) -> bool:
     """True if `path` is `base` or sits underneath it."""
     return path == base or base in path.parents

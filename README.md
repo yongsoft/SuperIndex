@@ -53,6 +53,44 @@ with directory depth**, because the directory tree is far smaller than the file
 count — 144 files lived in 229 directories in our test corpus, and the whole
 directory listing fits in one prompt at ~2K tokens.
 
+### Business knowledge lives in a config file, not in the router
+
+The router ships with sensible defaults for an *unknown* corpus. Inside a
+company the corpus is not unknown: someone knows that statutory reports live
+under `annual/`, that `_drafts/` must never be searched, that "友邦" and "AIA"
+are the same company. That knowledge belongs to the business, so it belongs in
+`config/routing_policy.yaml` — editable without touching Python, and re-read on
+every question so there is nothing to restart.
+
+```yaml
+directories:
+  exclude: [_drafts, templates, .trash]     # the only hard filter
+  weights:                                  # bias the ranking, don't gate it
+    - { pattern: annual, weight: 3, label: 法定年报 }
+  scopes:                                   # advisory: rendered into the prompt
+    - name: 财务指标
+      dirs: [annual, interim]
+      note: VONB / OPAT / 股息这类数字先看这里
+periods:
+  patterns: ['FY\s?(\d{2,4})']              # FY24 → 2024, so it matches the path
+aliases:
+  友邦: [AIA, 友邦保险]                      # synonym expansion in the fallback
+```
+
+Two properties make this safe to hand to a business owner:
+
+* **An empty policy is a no-op.** Delete the file and routing behaves exactly
+  as it did before the feature existed. `tests/test_policy.py` pins this down
+  assertion by assertion.
+* **A broken policy is never fatal.** A YAML typo degrades to the built-in
+  defaults, prints one line, and records the failure in
+  `results/logs/errors.jsonl` with `where: policy.load`. The app keeps answering
+  questions while someone fixes the file.
+
+Every query records which policy was in effect, so "I added a weight and nothing
+changed" is answerable after the fact. See
+[`config/routing_policy.yaml`](config/routing_policy.yaml) for the full format.
+
 ### Scales cheaply, and you can measure it before spending
 
 Structural indexing needs **no LLM and no API key**.
@@ -134,6 +172,12 @@ frontend framework, just a stdlib HTTP server and one HTML file.
   when files are added, edited or deleted it re-extracts only those files and
   regenerates only their descriptions. Unchanged documents keep their existing
   summaries, so a one-file edit costs one file's worth of work.
+- **Example questions, derived from the corpus.** The chips above the input box
+  are generated from the corpus itself — its description, directory topics, file
+  summaries and section titles — so they ask about things the index can actually
+  answer. A hand-written demo question only fits the corpus it was written for;
+  a generated one fits whatever you drop in. Questions you have already asked
+  come back as a dropdown when the box is focused, so a repeat is one click.
 - **Answers stay auditable.** The chat shows the navigation trace — which
   directories, files and sections the model chose, and which fallback fired if
   it hesitated — alongside the streamed answer and its sources.
@@ -155,21 +199,26 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**183 assertions** across the extraction, navigation, registry, LLM-retry and
-logging layers, with no network and no credentials required:
+**470 assertions** across the extraction, navigation, registry, LLM-retry,
+logging, policy and suggestion layers, with no network and no credentials
+required:
 
 ```bash
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
 python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
-python tests/test_registry.py    # 67 assertions — registry, change detection, watcher, drop zone
-python tests/test_llm_retry.py   # 23 assertions — token-budget escalation, stream fallback
+python tests/test_registry.py    # 135 assertions — registry, change detection, watcher, drop zone
+python tests/test_llm_retry.py   # 39 assertions — token-budget escalation, stream fallback
 python tests/test_debuglog.py    # 40 assertions — query/error records, rotation, filters
+python tests/test_policy.py      # 128 assertions — routing policy, incl. "empty = no-op"
+python tests/test_suggest.py     # 75 assertions — example-question generation and caching
 ```
 
 `test_backend.py` reports 27 once the sample PDFs are present; without them the
 two PDF-dependent assertions skip rather than fail, so the suite is runnable on a
 bare clone. `test_registry.py` builds its own fixtures in a temp directory and
 indexes with descriptions disabled, so it never calls an LLM.
+`test_policy.py` and `test_suggest.py` stub the LLM and write only to temp
+directories, so they never touch `results/logs/`.
 
 ---
 
@@ -241,6 +290,10 @@ Copy `.env.example` to `.env`. It documents every knob, including the optional
 Azure Document Intelligence section. The only required value for the offline
 path is nothing at all; for summarisation and QA you need one LLM provider key.
 
+Business routing rules live in a separate file, [`config/routing_policy.yaml`](config/routing_policy.yaml)
+— see [above](#business-knowledge-lives-in-a-config-file-not-in-the-router).
+Point `SUPERINDEX_ROUTING_POLICY` at another path to keep it out of the checkout.
+
 ### Options worth knowing
 
 | Flag | Effect |
@@ -249,6 +302,8 @@ path is nothing at all; for summarisation and QA you need one LLM provider key.
 | `--summarize-files` / `--summarize-chapters` | Generate routing summaries (incremental, LLM-backed) |
 | `--max-files N` | Limit scope while evaluating |
 | `--json` (on `nav.route`) | Machine-readable output: selected files, sections, line ranges |
+| `--show-policy` (on `nav.route`) | Print which routing policy is in effect, then exit |
+| `--policy PATH` / `--corpus NAME` (on `nav.route`) | Override the policy file, or bind a per-corpus overlay |
 
 ---
 
@@ -399,6 +454,11 @@ python scripts/07_logs.py --stats
 The timings tell you where to look: routing dominates here, so that is where a
 latency fix would pay off.
 
+Each record also names the routing policy that was in effect, so "I added a
+directory weight and nothing changed" has a definitive answer: either the policy
+file was not found (`source` empty), or it loaded and the weight simply did not
+match. See [`config/routing_policy.yaml`](config/routing_policy.yaml).
+
 `GET /api/logs?kind=queries|errors&limit=N&failed=1` serves the same data to the
 UI. Set `SUPERINDEX_DEBUG_LOG=0` to turn logging off, `SUPERINDEX_LOG_DIR` to
 move it. Logging never breaks the app — a write failure prints one line to
@@ -462,7 +522,8 @@ Stated plainly, because they are the questions a new user hits first.
 | **Chapter summaries need an LLM** | A one-time per-corpus cost. Without them, section selection degrades to token matching. |
 | **Scanned PDFs still need Azure DI** | A PDF is no longer reduced to one node per page: PageIndex's offline `flash` engine builds a real chapter tree from layout statistics. But a PDF with *no text layer at all* still needs Azure DI's OCR. |
 | **Directory quality sets the ceiling** | Thousands of files flattened into one directory degrade level 0 to listing thousands of names. That is a corpus-organisation problem. |
-| **Fallbacks match tokens, not synonyms** | "Life insurance" will not match a directory named `人身险`. An embedding pre-filter would fix it — at the cost of reintroducing the similarity problem the design avoids. |
+| **Fallbacks match tokens, not synonyms** | "Life insurance" will not match a directory named `人身险`. The `aliases:` block in `config/routing_policy.yaml` fixes the cases you can name; an embedding pre-filter would generalise, at the cost of reintroducing the similarity problem the design avoids. |
+| **The policy biases, it does not reason** | Weights and scopes nudge a model that is already looking at the candidates. They cannot rescue a question whose answer is genuinely absent, and a wrong `exclude` will hide a directory — which is why exclusions match whole path segments rather than substrings. |
 | **Validated on synthetic corpora** | 16-file and 144-file corpora with known structure. The scale numbers are real; routing accuracy on a genuinely messy production corpus is not yet measured. |
 
 ---

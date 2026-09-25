@@ -131,6 +131,10 @@ class QueryTrace:
             "ok": False,
             "error": None,
             "stages": {},
+            # Which business routing policy was in effect. Recorded per query
+            # because "I added a directory weight and nothing changed" is
+            # otherwise indistinguishable from "the weight never matched".
+            "policy": {},
         }
         self._t0 = time.time()
         self._marks: dict[str, float] = {}
@@ -159,6 +163,14 @@ class QueryTrace:
 
     def stage_ms(self, name: str, ms: int) -> None:
         self.record["stages"][name] = ms
+
+    def policy(self, info: dict) -> None:
+        """Note the routing policy this query ran under.
+
+        Cheap, and the only way to answer "did my config actually load?"
+        after the fact — an empty `source` means no policy file was found.
+        """
+        self.record["policy"] = dict(info or {})
 
     # ── terminal states ──────────────────────────────────────────────────
     def finish(self, answer: str = "", **extra: Any) -> dict:

@@ -128,18 +128,28 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .step{font-size:13px;color:var(--ink-600);font-family:var(--mono);padding:4px 0;line-height:1.65}
 .step b{color:var(--ink);font-weight:600}
 .step .fb{color:var(--warn)}
+.step.pol{color:var(--ink-400);border-bottom:1px dashed var(--ink-100);margin-bottom:4px;padding-bottom:7px}
 .srcs{margin-top:16px;border-top:1px solid var(--ink-100);padding-top:12px;font-size:12.5px;color:var(--ink-400);font-family:var(--mono);line-height:1.9}
 .stage{font-size:12.5px;color:var(--ink-400);font-family:var(--mono);margin:7px 0}
 .empty{color:var(--ink-400);font-size:14px;text-align:center;padding:44px 20px;line-height:2}
 .composer{flex:none;border-top:1px solid var(--ink-100);padding:15px 32px 18px;background:var(--surface)}
 .crow{display:flex;gap:10px;align-items:flex-end;max-width:860px}
 textarea{
-  flex:1;font:inherit;font-size:15px;padding:11px 14px;border-radius:11px;border:1px solid var(--ink-200);
+  flex:1;min-width:0;font:inherit;font-size:15px;padding:11px 14px;border-radius:11px;border:1px solid var(--ink-200);
   background:var(--surface);color:var(--ink);resize:none;min-height:46px;max-height:180px;line-height:1.55;
 }
 textarea:focus{outline:none;border-color:var(--red);box-shadow:0 0 0 3px var(--red-50)}
 textarea::placeholder{color:var(--ink-300)}
 .scope{font-size:12.5px;color:var(--ink-400);margin-top:9px;max-width:860px}
+.sugg{display:flex;gap:8px;flex-wrap:wrap;max-width:860px;margin-bottom:10px}
+.sugg:empty{display:none}
+.sugg-btn{
+  font:inherit;font-size:13px;line-height:1.4;padding:6px 13px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--ink-200);background:var(--surface);color:var(--ink-600);
+  text-align:left;transition:background .12s,border-color .12s,color .12s;
+}
+.sugg-btn:hover{border-color:var(--red);color:var(--red);background:var(--red-50)}
+.sugg-btn:focus-visible{outline:none;border-color:var(--red);box-shadow:0 0 0 3px var(--red-50)}
 .btn{
   font:inherit;font-size:13.5px;font-weight:600;padding:8px 16px;border-radius:10px;border:1px solid var(--ink-200);
   background:var(--surface);color:var(--ink);cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s;
@@ -168,6 +178,21 @@ label.chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink
 #alias{font:inherit;font-size:13px;padding:7px 11px;border-radius:9px;border:1px solid var(--ink-200);background:var(--surface);color:var(--ink);width:160px}
 #alias:focus{outline:none;border-color:var(--red)}
 .err{color:var(--err);font-size:13px;margin-top:8px}
+/* 历史问题下拉 — 聚焦输入框时弹出，点击填入 */
+.q-wrap{position:relative;flex:1;display:flex;min-width:0}
+.q-dropdown{
+  position:absolute;bottom:calc(100% + 4px);left:0;right:0;
+  background:var(--surface);border:1px solid var(--ink-200);border-radius:10px;
+  box-shadow:0 4px 16px rgba(0,0,0,.12);max-height:200px;overflow-y:auto;z-index:10;
+}
+.q-dropdown[hidden]{display:none}
+.q-dropdown button{
+  display:block;width:100%;text-align:left;padding:9px 14px;
+  border:0;background:transparent;color:var(--ink);font:inherit;font-size:14px;
+  cursor:pointer;border-bottom:1px solid var(--ink-50);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.q-dropdown button:last-child{border-bottom:0}
+.q-dropdown button:hover{background:var(--red-50);color:var(--red)}
 </style>
 </head>
 <body>
@@ -206,8 +231,12 @@ label.chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink
         </div>
       </div>
       <div class="composer">
+        <div class="sugg" id="sugg"></div>
         <div class="crow">
-          <textarea id="q" rows="1" placeholder="Ask across the selected corpora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+          <div class="q-wrap">
+            <textarea id="q" rows="1" placeholder="Ask across the selected corpora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+            <div class="q-dropdown" id="qDropdown" hidden></div>
+          </div>
           <button class="btn pri" id="send" disabled>Send</button>
         </div>
         <div class="scope" id="scope">No scope selected</div>
@@ -278,6 +307,7 @@ function pretty(rel){
 async function load(){
   try{ S = await (await fetch('/api/state')).json(); }catch(e){ return; }
   chips(); renderList(); renderScope();
+  loadRecentQ();
 }
 
 function chips(){
@@ -381,13 +411,75 @@ $('#list').addEventListener('change', e => { if (e.target.dataset.sel) renderSco
 function renderScope(){
   const sel = [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
   const ready = S.corpora.filter(c => c.ready);
-  if (!ready.length){ $('#scope').textContent = 'No indexed corpora yet'; $('#send').disabled = true; return; }
+  if (!ready.length){ $('#scope').textContent = 'No indexed corpora yet'; $('#send').disabled = true; renderSuggestions(); return; }
   $('#scope').textContent = sel.length
     ? `Scope: ${sel.map(id => (S.corpora.find(c=>c.id===id)||{}).name||id).join(', ')}  (${sel.length}/${ready.length})`
     : `Scope: all ${ready.length} indexed corpora`;
   $('#send').disabled = false;
+  renderSuggestions();
 }
 const picked = () => [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
+
+// ── 历史问题下拉 ──────────────────────────────────────────────────────
+// 从 /api/recent-questions 拉取去重后的历史问题，聚焦输入框时弹出 3 条，
+// 点击填入。与 per-corpus 的 suggestion chips 互不干扰。
+let RECENT_Q = [];
+async function loadRecentQ(){
+  try{ RECENT_Q = (await (await fetch('/api/recent-questions')).json()).questions || []; }
+  catch(e){ RECENT_Q = []; }
+}
+function showQDropdown(){
+  const dd = $('#qDropdown');
+  const items = RECENT_Q.slice(0, 3);
+  if (!items.length){ dd.hidden = true; return; }
+  dd.innerHTML = items.map(q => `<button type="button">${esc(q)}</button>`).join('');
+  dd.hidden = false;
+}
+function hideQDropdown(){ $('#qDropdown').hidden = true; }
+
+$('#q').addEventListener('focus', showQDropdown);
+$('#q').addEventListener('blur', () => setTimeout(hideQDropdown, 150));
+$('#qDropdown').addEventListener('mousedown', e => e.preventDefault()); // 防止 blur 抢断 click
+$('#qDropdown').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const t = $('#q');
+  t.value = b.textContent;
+  hideQDropdown();
+  t.focus();
+  t.dispatchEvent(new Event('input'));
+});
+
+// Example questions, generated per corpus and cached server-side. Round-robin
+// across the corpora in scope so three chips are three different topics rather
+// than three questions about the same report. Clicking one fills the box — it
+// does not send, so a stray click costs nothing and the text stays editable.
+function renderSuggestions(){
+  const sel = picked();
+  const pool = S.corpora.filter(c => c.ready && (c.suggestions||[]).length
+                                  && (!sel.length || sel.includes(c.id)));
+  const out = [];
+  for (let round = 0; out.length < 3; round++){
+    let added = false;
+    for (const c of pool){
+      const q = c.suggestions[round];
+      if (q && out.length < 3 && !out.includes(q)){ out.push(q); added = true; }
+    }
+    if (!added) break;
+  }
+  const box = $('#sugg');
+  box.innerHTML = out.map(q => `<button class="sugg-btn" type="button">${esc(q)}</button>`).join('');
+  box.title = out.length ? 'Example questions from the corpora in scope' : '';
+}
+
+$('#sugg').addEventListener('click', e => {
+  const b = e.target.closest('.sugg-btn');
+  if (!b) return;
+  const t = $('#q');
+  t.value = b.textContent;
+  t.focus();
+  t.dispatchEvent(new Event('input'));   // reuse the auto-grow handler
+});
 
 // ── directory browser ───────────────────────────────────────────────────
 $('#addBtn').onclick = () => { $('#dlg').showModal(); browse(CUR?.path || S.data_root || '/'); };
@@ -450,6 +542,8 @@ async function ask(){
         if (!ev || dt === undefined) continue;
         let d; try{ d = JSON.parse(dt); }catch{ continue; }
         if (ev === 'stage') stg.textContent = d.text;
+        else if (ev === 'policy'){ if (!d.empty) steps.insertAdjacentHTML('afterbegin',
+          `<div class="step pol">策略 ${esc(d.describe)}</div>`); }
         else if (ev === 'nav') steps.insertAdjacentHTML('beforeend',
           `<div class="step">[${d.level==='dir'?'dir':'section'}] ${esc(pretty(d.where))}
            <br>→ <b>${esc((d.picked||[]).map(pretty).join('、'))}</b>${d.note?` <span class="fb">(${esc(d.note)})</span>`:''}</div>`);

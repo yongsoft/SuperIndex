@@ -39,6 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nav import llm  # noqa: E402
 from nav.debuglog import error as log_error  # noqa: E402
+from nav.policy import (  # noqa: E402
+    POLICY_CANDIDATES, POLICY_ENV, PolicyError, RoutingPolicy,
+)
 from nav.store import Chapter, DirEntry, FileEntry, Manifest  # noqa: E402
 
 DIR_TREE_BUDGET = 240        # dirs shown at once in level 1
@@ -76,8 +79,31 @@ TOKENS_ROUTE = int(os.getenv("NAV_TOKENS_ROUTE", "1500"))
 TOKENS_SECTION = int(os.getenv("NAV_TOKENS_SECTION", "1200"))
 
 def year_hints(question: str) -> list[str]:
-    """Years mentioned in the question — the strongest routing signal for reports."""
+    """Years mentioned in the question — the strongest routing signal for reports.
+
+    This is the *built-in* period extractor. A `RoutingPolicy` extends it with
+    business-specific period syntax (`FY24`, `2024H1`, `Q3`) and is what the
+    navigator actually calls; with an empty policy the two are identical.
+    """
     return re.findall(r"(?:19|20)\d{2}", question)
+
+
+def _bind_policy(policy: Optional[RoutingPolicy], corpus: str = "") -> RoutingPolicy:
+    """Resolve the policy a navigator will use, never raising.
+
+    A broken policy file must not stop a query — a typo in YAML should degrade
+    to the built-in defaults and leave a trace in the error log, not take the
+    server down. That is the whole reason `PolicyError` exists as a distinct
+    type: it is catchable here and nowhere else.
+    """
+    if policy is None:
+        try:
+            policy = RoutingPolicy.load()
+        except PolicyError as exc:
+            log_error(exc, where="policy.load")
+            print(f"  ! 路由策略加载失败，退回默认行为: {exc}", flush=True)
+            policy = RoutingPolicy()
+    return policy.flatten_for(corpus) if corpus else policy
 
 
 def _question_terms(question: str) -> list[tuple[str, int]]:
@@ -103,7 +129,9 @@ def _question_terms(question: str) -> list[tuple[str, int]]:
 
 
 def _score_candidate(question: str, path: str, summary: str,
-                     years: list[str], topic: str = "") -> int:
+                     years: list[str], topic: str = "", *,
+                     weight: int = 0,
+                     extra_terms: tuple[tuple[str, int], ...] = ()) -> int:
     """Score one candidate against the question.
 
     Weighting follows trustworthiness, not convenience:
@@ -113,28 +141,35 @@ def _score_candidate(question: str, path: str, summary: str,
       weight, so a whole-phrase hit counts double a bigram overlap
     * **year** anywhere — 3, because a period match is the strongest signal
       available and is what cross-period questions get wrong
+    * **weight** — the `RoutingPolicy` bonus, added last and separately
 
     The fallback exists precisely for the case where folder names are
-    unhelpful, so it must not lean on them.
+    unhelpful, so it must not lean on them. The policy bonus is the one
+    sanctioned exception, and it comes from a human who *knows* which folder
+    names are unhelpful — which is why it is a flat bonus rather than a
+    multiplier on the path term.
+
+    `extra_terms` carries alias expansions (see `RoutingPolicy.alias_terms`).
     """
     low_path = path.lower()
     low_text = f"{topic or ''} {summary or ''}".lower()
-    score = 0
+    score = weight
     for year in years:
         if year in path or year in low_text:
             score += 3
-    for term, weight in _question_terms(question):
+    for term, term_weight in list(_question_terms(question)) + list(extra_terms):
         t = term.lower()
         if t in low_path:
             score += 1
         if t in low_text:
-            score += weight
+            score += term_weight
     return score
 
 
 class Navigator:
     def __init__(self, index_dir: str | Path, model: str = llm.DEFAULT_MODEL,
-                 effort: str = llm.DEFAULT_EFFORT, verbose: bool = True):
+                 effort: str = llm.DEFAULT_EFFORT, verbose: bool = True,
+                 policy: Optional[RoutingPolicy] = None, corpus: str = ""):
         self.index_dir = Path(index_dir)
         self.m = Manifest.load(self.index_dir)
         self.model = model
@@ -143,10 +178,37 @@ class Navigator:
         # corpus_id -> display name. Single-corpus navigators leave it empty and
         # paths pass through unchanged; MultiNavigator fills it in.
         self.names: dict[str, str] = {}
+        # Business routing knowledge (directory weights, periods, aliases…).
+        # `None` means "read config/routing_policy.yaml"; an empty policy is a
+        # no-op, so this cannot change behaviour by existing.
+        self.policy = _bind_policy(policy, corpus)
+        if not corpus and len(self.policy.corpora) == 1:
+            # A single-corpus index has no id prefix on its paths, so an overlay
+            # written for "the one corpus in the config" has nothing to match
+            # against. Binding it here keeps single- and multi-corpus setups on
+            # the same code path instead of special-casing lookups later.
+            # (Only safe because there is exactly one corpus: with several, an
+            # overlay must stay scoped to its own corpus.)
+            self.policy = self.policy.flatten_for(self.policy.corpus_keys[0])
 
     def _say(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def _periods(self, question: str) -> list[str]:
+        """Reporting periods in the question, policy-extended."""
+        return self.policy.periods_in(question)
+
+    def _visible_dirs(self, dirs: list) -> list:
+        """Drop directories the policy says must never be searched."""
+        if not self.policy.exclude:
+            return dirs
+        return [d for d in dirs if not self.policy.is_excluded(d.rel_path)]
+
+    def _visible_files(self, files: list) -> list:
+        if not self.policy.exclude:
+            return files
+        return [f for f in files if not self.policy.is_excluded(f.rel_path)]
 
     def display(self, rel_path: str) -> str:
         """Rel path with the corpus id replaced by its name, for anything the
@@ -164,7 +226,7 @@ class Navigator:
     # ------------------------------------------------------- level 1: files
     def find_files(self, question: str, top_n: int = 5
                    ) -> tuple[list[FileEntry], list[Step]]:
-        dirs = [d for d in self.m.dirs.values() if d.rel_path]
+        dirs = self._visible_dirs([d for d in self.m.dirs.values() if d.rel_path])
         trace: list[Step] = []
         if len(dirs) <= DIR_TREE_BUDGET:
             picked_dirs, st = self._pick_dirs_from_tree(question, dirs)
@@ -173,9 +235,9 @@ class Navigator:
             picked_dirs, st = self._descend_dirs(question, top_n)
             trace += st
 
-        pool = self._files_under(picked_dirs)
+        pool = self._visible_files(self._files_under(picked_dirs))
         if not pool:
-            pool = list(self.m.files.values())
+            pool = self._visible_files(list(self.m.files.values()))
             trace.append(Step(level="dir", where="(全部)", detail="fallback",
                               note="选中目录下无文件，回退到全量"))
         files, st = self._pick_files(question, pool, top_n)
@@ -184,7 +246,6 @@ class Navigator:
 
     def _pick_dirs_from_tree(self, question: str, dirs: list) -> tuple[list[str], list[Step]]:
         """Show the whole directory tree, let the model choose targets."""
-        by_path = {d.rel_path: d for d in dirs}
         lines = []
         ids = []
         for d in sorted(dirs, key=lambda x: x.rel_path):
@@ -198,21 +259,26 @@ class Navigator:
             label = f"{pad}[D{i}] {shown}/  ({d.n_files} 文件, {d.n_dirs} 子目录)"
             if d.summary:
                 label += f" — {d.summary}"
+            # Business priority marker, right next to the candidate it applies to.
+            label += self.policy.annotate(d.rel_path)
             lines.append(label)
         listing = "\n".join(lines)
-        years = year_hints(question)
+        years = self._periods(question)
         hint = f"\n注意：问题提到的年份是 {', '.join(years)}，目录路径或摘要必须与之匹配。" if years else ""
+        guidance = self.policy.prompt_block([d.rel_path for d in dirs])
 
         prompt = (
             "你在一个多级目录的知识库里定位文件所在的目录。只输出 JSON。\n\n"
             f"用户问题: {question}{hint}\n\n"
-            f"目录树（{len(dirs)} 个目录，缩进表示层级）:\n{listing}\n\n"
+            f"目录树（{len(dirs)} 个目录，缩进表示层级）:\n{listing}\n"
+            f"{guidance}\n"
             "任务：选出最可能包含答案的目录编号。\n"
             "规则：\n"
             "- 选最具体的目录：能直接定位到文件所在的那一层\n"
             "- 选 1-4 个，按相关性排序\n"
             "- **必须至少选 1 个**，从最相关的开始，不要留空\n"
-            "- 年份、公司名、报告期必须与问题一致\n\n"
+            "- 年份、公司名、报告期必须与问题一致\n"
+            "- 标注了 [优先+N] 的目录是业务上更常被问到的，同等相关时优先选它\n\n"
             '编号只写数字，不要带 D/F 前缀。输出: {"dirs": [0, 3]}'
         )
         try:
@@ -250,27 +316,35 @@ class Navigator:
                 cd, cf = self.m.children_of(dp)
                 dirs += [d for d in cd if d.rel_path not in seen]
                 files += cf
+            dirs = self._visible_dirs(dirs)
+            files = self._visible_files(files)
             if not dirs and not files:
                 break
             lines, ids = [], []
             for d in dirs:
                 ids.append(d.rel_path)
                 lines.append(f"[D{len(ids)-1}] {d.topic or d.name}/  ({d.n_files} 文件)"
-                             + (f" — {d.summary}" if d.summary else ""))
+                             + (f" — {d.summary}" if d.summary else "")
+                             + self.policy.annotate(d.rel_path))
             fids = []
             for f in files:
                 fids.append(f.rel_path)
                 lines.append(f"[F{len(fids)-1}] {f.name}"
-                             + (f" — {f.summary}" if f.summary else ""))
+                             + (f" — {f.summary}" if f.summary else "")
+                             + self.policy.annotate(f.rel_path))
             where = " / ".join(p or "/" for p in frontier)
+            guidance = self.policy.prompt_block(
+                [d.rel_path for d in dirs] + [f.rel_path for f in files])
             prompt = (
                 "你在一个多级目录的知识库里逐层定位文件。只输出 JSON。\n\n"
                 f"用户问题: {question}\n当前目录: {where}\n\n"
-                f"当前内容:\n" + "\n".join(lines) + "\n\n"
+                f"当前内容:\n" + "\n".join(lines) + "\n"
+                f"{guidance}\n"
                 "规则：\n"
                 "- descend: 要展开的子目录编号，1-3 个（只写数字）\n"
                 "- pick: 直接选中的文件编号，最多 5 个（只写数字）\n"
-                "- 若本层有文件且相关，优先 pick；否则必须 descend，不要留空\n\n"
+                "- 若本层有文件且相关，优先 pick；否则必须 descend，不要留空\n"
+                "- 标注了 [优先+N] 的目录是业务上更常被问到的\n\n"
                 '编号只写数字，不要带 D/F 前缀。输出: {"descend": [0], "pick": []}'
             )
             try:
@@ -313,11 +387,21 @@ class Navigator:
         Summaries matter more here than anywhere else — this path runs when the
         model did not pick, so it is the last chance to find a directory whose
         name says nothing about its contents.
+
+        Two policy hooks land here, because this is the one place a *wrong*
+        ranking is unrecoverable (the model is out of the loop): alias
+        expansions widen what counts as a hit, and directory weights break ties
+        in favour of the directories the business actually cares about.
         """
-        years = year_hints(question)
+        years = self._periods(question)
+        extra = tuple(self.policy.alias_terms(question))
         scored = []
         for d in dirs:
-            s = _score_candidate(question, d.rel_path, d.summary, years, d.topic)
+            if self.policy.is_excluded(d.rel_path):
+                continue
+            s = _score_candidate(question, d.rel_path, d.summary, years, d.topic,
+                                 weight=self.policy.weight_for(d.rel_path),
+                                 extra_terms=extra)
             if s:
                 scored.append((s, d.rel_path))
         scored.sort(reverse=True)
@@ -345,22 +429,29 @@ class Navigator:
         detail = "full" if len(pool) <= FILE_BUDGET else "names"
         lines = []
         for i, f in enumerate(pool):
+            # `rel_path` (internal, id-prefixed) is what the policy is matched
+            # against; `display` is what the model reads. Both are needed, so
+            # they are computed separately rather than one derived from the other.
+            mark = self.policy.annotate(f.rel_path)
             if detail == "full" and f.summary:
-                lines.append(f"[F{i}] {self.display(f.rel_path)} — {f.summary}")
+                lines.append(f"[F{i}] {self.display(f.rel_path)} — {f.summary}{mark}")
             else:
-                lines.append(f"[F{i}] {self.display(f.rel_path)}")
-        years = year_hints(question)
+                lines.append(f"[F{i}] {self.display(f.rel_path)}{mark}")
+        years = self._periods(question)
         hint = (f"\n注意：问题提到的年份是 {', '.join(years)}，文件名或摘要必须与之匹配。"
                 if years else "")
+        guidance = self.policy.prompt_block([f.rel_path for f in pool])
         prompt = (
             "你在从候选文件里挑出最可能包含答案的。只输出 JSON。\n\n"
             f"用户问题: {question}{hint}\n\n"
-            f"候选文件（{len(pool)} 个）:\n" + "\n".join(lines) + "\n\n"
+            f"候选文件（{len(pool)} 个）:\n" + "\n".join(lines) + "\n"
+            f"{guidance}\n"
             "任务：选出最相关的文件编号。\n"
             "规则：\n"
             f"- 选 1-{min(top_n, len(pool))} 个，按相关性排序\n"
             "- **必须至少选 1 个**，不要留空\n"
-            "- 报告期（年度/中期）与年份必须和问题一致\n\n"
+            "- 报告期（年度/中期）与年份必须和问题一致\n"
+            "- 标注了 [优先+N] 的路径是业务上更常被问到的，同等相关时优先选它\n\n"
             '编号只写数字。输出: {"files": [0, 2]}'
         )
         try:
@@ -388,10 +479,13 @@ class Navigator:
     def _fallback_files(self, question: str, pool: list[FileEntry],
                         top_n: int) -> list[FileEntry]:
         """Deterministic backstop over files; path and summary both count."""
-        years = year_hints(question)
+        years = self._periods(question)
+        extra = tuple(self.policy.alias_terms(question))
         scored = []
         for f in pool:
-            s = _score_candidate(question, f.rel_path, f.summary, years)
+            s = _score_candidate(question, f.rel_path, f.summary, years,
+                                 weight=self.policy.weight_for(f.rel_path),
+                                 extra_terms=extra)
             scored.append((s, f))
         scored.sort(key=lambda x: -x[0])
         top = [f for s, f in scored[:top_n]]
@@ -473,6 +567,8 @@ class Navigator:
         res = Result(question=question)
         self._say(f"\n问题: {question}")
         self._say(f"索引: {len(self.m.files)} 文件 / {len(self.m.dirs) - 1} 目录")
+        if not self.policy.is_empty:
+            self._say(f"策略: {self.policy.describe()}")
         res.files, t1 = self.find_files(question, top_n=max_files)
         res.trace += t1
         if not res.files:
@@ -549,7 +645,7 @@ class MultiNavigator(Navigator):
 
     def __init__(self, corpora: list[tuple[str, "str | Path", str, str]],
                  model: str = llm.DEFAULT_MODEL, effort: str = llm.DEFAULT_EFFORT,
-                 verbose: bool = True):
+                 verbose: bool = True, policy: Optional[RoutingPolicy] = None):
         self._corpora = corpora
         self.model = model
         self.effort = effort
@@ -557,6 +653,10 @@ class MultiNavigator(Navigator):
         self.index_dir = Path(".")            # unused; kept for the base class
         self.m, self._index_dirs = merge_manifests(corpora)
         self.names = {cid: name for cid, _d, name, _s in corpora}
+        # Corpus overlays in the config are keyed by display name, because that
+        # is what a human editing the file sees. Paths here are keyed by id, so
+        # bind the two once, now, rather than translating on every lookup.
+        self.policy = _bind_policy(policy).bind_corpora(self.names)
 
     def _load_tree(self, fe: FileEntry) -> tuple[list[Chapter], list[str]]:
         cid = fe.rel_path.split("/", 1)[0]
@@ -681,15 +781,40 @@ def main() -> int:
     ap.add_argument("--max-sections", type=int, default=6)
     ap.add_argument("--show-content", action="store_true")
     ap.add_argument("--json", action="store_true")
+    # Business routing policy. Default: config/routing_policy.yaml if present.
+    ap.add_argument("--policy", default=None,
+                    help=f"路由策略文件（默认 {POLICY_CANDIDATES[0]}，"
+                         f"也可用 ${POLICY_ENV}）")
+    ap.add_argument("--corpus", default="",
+                    help="语料名或 ID，用于套用策略文件里的单语料覆盖")
+    ap.add_argument("--show-policy", action="store_true",
+                    help="只打印生效的策略然后退出")
     args = ap.parse_args()
 
-    nav = Navigator(args.index_dir, model=args.model, effort=args.effort)
+    try:
+        policy = RoutingPolicy.load(args.policy)
+    except PolicyError as exc:
+        print(f"策略加载失败: {exc}", file=sys.stderr)
+        return 2
+    if args.show_policy:
+        print(f"策略来源: {policy.source or '(未找到，使用内置默认)'}")
+        print(f"策略内容: {policy.describe()}")
+        for k, ov in policy.corpora:
+            print(f"  语料覆盖 {k}: "
+                  f"{len(ov.weights)} 权重 / {len(ov.exclude)} 排除 / "
+                  f"{len(ov.scopes)} 业务域")
+        return 0
+
+    nav = Navigator(args.index_dir, model=args.model, effort=args.effort,
+                    policy=policy, corpus=args.corpus)
     res = nav.run(args.question, max_files=args.max_files,
                   max_sections=args.max_sections)
 
     if args.json:
         print(json.dumps({
             "question": res.question,
+            "policy": {"source": nav.policy.source,
+                       "describe": nav.policy.describe()},
             "files": [f.rel_path for f in res.files],
             "sections": [{"file": f.rel_path, "title": c.title,
                           "start": c.start, "end": c.end} for f, c in res.sections],

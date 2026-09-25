@@ -47,6 +47,15 @@ def show_query_detail(rec: dict) -> None:
     print(f"  范围   : {', '.join(rec.get('scope') or []) or '(全部)'}")
     print(f"  模型   : {rec.get('model')}")
     print(f"  结果   : {'成功' if rec.get('ok') else '失败'}   {fmt_ms(rec.get('ms'))}")
+    # Which business routing policy was in effect. An empty source means no
+    # policy file was found, which is the answer to "why did my weight not
+    # change anything?" more often than a wrong weight is.
+    pol = rec.get("policy") or {}
+    if pol:
+        where = pol.get("source") or "(未找到策略文件，使用内置默认)"
+        print(f"  策略   : {where}")
+        if pol.get("describe"):
+            print(f"           {pol['describe']}")
     if rec.get("error"):
         print(f"  错误   : {rec['error']}")
 

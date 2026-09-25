@@ -312,8 +312,12 @@ def test_display_path(tmp: Path) -> None:
           display_path("610b3c99/2024/annual/A.md", names)
           == "友邦保险 / 2024/annual/A.md",
           display_path("610b3c99/2024/annual/A.md", names))
-    check("只有 id 没有子路径",
-          display_path("610b3c99", names) == "610b3c99",
+    # The bare id is a real selection: routing picks the corpus level before it
+    # picks anything inside it, so an id with no `/` must still render as the
+    # name. Letting it through unchanged is exactly what produced
+    # "→ a9e87d72、5a4a0b3b" in the thinking panel.
+    check("只有 id 没有子路径也要翻译",
+          display_path("610b3c99", names) == "友邦保险",
           display_path("610b3c99", names))
     check("未知 id 原样返回",
           display_path("zzzzzzzz/x.md", names) == "zzzzzzzz/x.md")

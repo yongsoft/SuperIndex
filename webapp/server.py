@@ -12,6 +12,7 @@ navigator over a set of registered directories.
     PATCH  /api/corpora/<id>          {"name": ...}
     DELETE /api/corpora/<id>          unregister (and delete its index)
     POST   /api/corpora/<id>/reindex  {"deep_index": bool, "force": bool}
+    GET    /api/recent-questions       deduped recent questions for input dropdown
     POST   /api/ask                   {"question": ..., "corpus_ids": [...]} -> SSE
 
 Registered directories are indexed in the background; once a corpus is `ready`
@@ -46,6 +47,7 @@ load_dotenv(ROOT / ".env")
 
 from nav import llm  # noqa: E402
 from nav.debuglog import QueryTrace, read as read_log, stats as log_stats  # noqa: E402
+from nav.policy import PolicyError, RoutingPolicy  # noqa: E402
 from nav.registry import DATA_ROOT, Registry  # noqa: E402
 from nav.route import Result, build_context, answer_prompt  # noqa: E402
 
@@ -91,10 +93,36 @@ def corpus_json(c) -> dict:
         "n_chapters": c.n_chapters,
         "n_summarized": c.n_summarized,
         "deep_index": c.deep_index,
+        # Example questions for the input box. Cached on the corpus record, so
+        # this is a read, not a generation — see Registry.ensure_suggestions()
+        # for the backfill path.
+        "suggestions": list(c.suggestions),
         "added_at": c.added_at,
         "indexed_at": c.indexed_at,
         "checked_at": c.checked_at,
         "changes": c.changes,
+    }
+
+
+def policy_json() -> dict:
+    """The routing policy currently in effect, for the UI.
+
+    Never raises. A policy file that fails to parse is reported as an error
+    string rather than a 500, because "the business config is broken" is
+    something the person who edited it needs to *see*, and the app must keep
+    answering questions while they fix it.
+    """
+    try:
+        p = RoutingPolicy.load()
+    except PolicyError as exc:
+        return {"ok": False, "error": str(exc), "source": "",
+                "describe": "加载失败，已退回内置默认行为", "empty": True,
+                "exclude": [], "corpora": []}
+    return {
+        "ok": True, "error": "", "source": p.source,
+        "describe": p.describe(), "empty": p.is_empty,
+        "exclude": list(p.exclude),
+        "corpora": list(p.corpus_keys),
     }
 
 
@@ -144,6 +172,11 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._file(STATIC / "index.html", "text/html; charset=utf-8")
         elif path == "/api/state":
+            # Backfill example questions for corpora that lack them. Cheap when
+            # there is nothing to do (one set lookup), and it runs in the
+            # background, so a corpus indexed before this feature existed picks
+            # up its chips within a poll or two instead of never.
+            reg.ensure_suggestions()
             self._json({
                 "corpora": [corpus_json(c) for c in reg.list()],
                 "watching": reg.watching,
@@ -153,6 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                 "reasoning_effort": REASONING_EFFORT,
                 "home": str(Path.home()),
                 "data_root": str(DATA_ROOT),
+                "policy": policy_json(),
                 "logs": log_stats(),
             })
         elif path == "/api/logs":
@@ -172,6 +206,20 @@ class Handler(BaseHTTPRequestHandler):
                     only_failed=q.get("failed", ["0"])[0] in ("1", "true"),
                     query_id=q.get("id", [""])[0]),
             })
+        elif path == "/api/recent-questions":
+            # 去重后的历史问题，给输入框聚焦时做下拉提示。过滤太短的
+            # 输入（"AI A" 这类误触），按出现顺序去重，最多 12 条。
+            seen = set()
+            out = []
+            for rec in read_log("queries", limit=200):
+                q = (rec.get("question") or "").strip()
+                if len(q) < 6 or q in seen:
+                    continue
+                seen.add(q)
+                out.append(q)
+                if len(out) >= 12:
+                    break
+            self._json({"questions": out})
         elif path.startswith("/api/corpora/") and path.endswith("/tree"):
             cid = path[len("/api/corpora/"):-len("/tree")]
             tree = reg.corpus_tree(cid)
@@ -277,8 +325,15 @@ class Handler(BaseHTTPRequestHandler):
         trace = QueryTrace(question,
                            [corpus_name(reg, c) for c in nav.corpus_ids],
                            model=llm.DEFAULT_MODEL)
+        # Which business policy this run used. Emitted before routing so the UI
+        # can show it alongside the steps it influenced.
+        policy_info = {"source": nav.policy.source,
+                       "describe": nav.policy.describe(),
+                       "empty": nav.policy.is_empty}
+        trace.policy(policy_info)
         try:
             with _ask_lock:
+                emit("policy", policy_info)
                 emit("stage", {"text": f"路由：{len(nav.corpus_ids)} 个语料"})
                 res = Result(question=question)
 

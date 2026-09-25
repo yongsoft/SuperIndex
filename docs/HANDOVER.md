@@ -208,9 +208,14 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 ├── tests/
 │   ├── test_azure_di.py       azure_di 的离线测试（28 断言，不联网）
 │   ├── test_backend.py        后端解析的离线测试（25 断言，不联网）
-│   ├── test_registry.py       语料注册表/watcher 的离线测试（67 断言，不联网）
-│   ├── test_llm_retry.py      LLM 预算升级与流式回退（23 断言，stub 掉 litellm）
-│   └── test_debuglog.py       日志记录/过滤/轮转（40 断言，写临时目录）
+│   ├── test_registry.py       语料注册表/watcher 的离线测试（135 断言，不联网）
+│   ├── test_llm_retry.py      LLM 预算升级与流式回退（39 断言，stub 掉 litellm）
+│   ├── test_debuglog.py       日志记录/过滤/轮转（40 断言，写临时目录）
+│   ├── test_policy.py         路由策略（128 断言，stub 掉 LLM，只写临时目录）
+│   └── test_suggest.py        示例问题生成/缓存（75 断言，stub 掉 LLM，只写临时目录）
+│
+├── config/                    ★ 业务配置（唯一需要业务方改的地方）
+│   └── routing_policy.yaml    路由策略：目录权重/排除/业务域/期间/别名
 │
 ├── webapp/                    ★ 目录驱动的 Web 界面
 │   ├── server.py              标准库 http.server + SSE，端口 8787
@@ -222,6 +227,8 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── store.py               数据模型与持久化
 │   ├── registry.py            ★ 语料注册表：多目录、后台索引、变化监控
 │   ├── debuglog.py            ★ 结构化调试日志（queries.jsonl / errors.jsonl）
+│   ├── policy.py              ★ 业务路由策略（目录权重/排除/业务域/别名）
+│   ├── suggest.py             ★ 语料示例问题生成（输入框上方的 chips）
 │   ├── build.py               CLI：建索引
 │   └── route.py               CLI：两级导航查询
 │
@@ -302,8 +309,11 @@ API 一览（全部可脚本化）：
 
 | | |
 |---|---|
-| `GET /api/state` | 语料列表、状态、watcher 状态、模型 |
+| `GET /api/state` | 语料列表、状态、watcher 状态、模型、示例问题 |
 | `GET /api/browse?path=` | 列子目录（**只读、只给名字，不读文件内容**） |
+| `GET /api/logs?kind=queries\|errors` | 结构化日志（见 5.x） |
+| `GET /api/recent-questions` | 去重后的历史问题，给输入框聚焦下拉用 |
+| `GET /api/corpora/<id>/tree` | 语料目录树（UI 展开卡片时拉取） |
 | `POST /api/corpora` | 注册目录并开始后台索引 |
 | `PATCH /api/corpora/<id>` | 改名 |
 | `DELETE /api/corpora/<id>` | 移除并删除索引 |
@@ -512,7 +522,7 @@ finish_reason=length)` —— 提问时回答阶段直接报错。
 - 服务器答案预算 1500 → **4096**（`SUPERINDEX_ANSWER_MAX_TOKENS` 可覆盖）
 - 报错信息改成**逐次列出每次尝试**的预算与 reasoning 状态，便于诊断
 
-覆盖测试：`tests/test_llm_retry.py`（23 条，stub 掉 litellm，不联网）。
+覆盖测试：`tests/test_llm_retry.py`（39 条，stub 掉 litellm，不联网）。
 
 ### 5.13 `nav/debuglog.py` —— 结构化调试日志（新增）
 
@@ -555,6 +565,53 @@ python scripts/07_logs.py --stats
 - `SUPERINDEX_DEBUG_LOG=0` 可关闭，`SUPERINDEX_LOG_DIR` 可换位置
 
 覆盖测试：`tests/test_debuglog.py`（40 条，全部写临时目录）。
+
+### 5.14 `nav/policy.py` + `config/routing_policy.yaml` —— 业务路由策略（新增）
+
+**要解决的问题**：`nav/route.py` 对「语料长什么样」有四个内置假设 ——
+报告期就是 4 位年份、目录名不可信、每个目录同等值得看、问题里有什么词就用什么词。
+面对未知语料这是对的，但在企业内部语料不是未知的：业务方知道法定年报在
+`annual/` 下、`_drafts/` 不该被搜、「友邦」和「AIA」是同一家公司。
+
+这部分知识原来只能写死在 Python 里。现在它属于 `config/routing_policy.yaml`。
+
+**四个注入点**（每个对应 route.py 里的一个假设）：
+
+| 方法 | 位置 | 作用 |
+|---|---|---|
+| `periods_in()` | `_pick_dirs_from_tree` / `_pick_files` / 两个 fallback | 内置 4 位年份 + 业务写法；`FY24` 归一成 `2024` |
+| `weight_for()` / `annotate()` | `_score_candidate` 的 `weight=`、提示词每行末尾 | 目录权重加分 + `[优先+3 法定年报]` 标注 |
+| `prompt_block()` | 目录/文件选择提示词 | `scopes` / `instructions`，纯提示 |
+| `is_excluded()` / `alias_terms()` | `_visible_dirs/_files`、两个 fallback | 硬过滤 + 同义词扩展 |
+
+**两条红线**（改动前请先看 `tests/test_policy.py`）：
+
+1. **空策略 = 内置行为。** `RoutingPolicy()` 对所有方法都返回改造前的结果。
+   删掉配置文件，行为与这个功能不存在时完全一致。测试里逐条断言了这一点，
+   这是这个功能敢上线的唯一理由 —— 任何让「空策略 != 原行为」的改动都是回归。
+2. **配置排序，不设闸门。** 权重和业务域只影响模型的倾向；只有 `exclude`
+   真的移除候选。而且 `exclude` 按**路径整段**匹配（不是子串），
+   所以 `exclude: [draft]` 不会误伤 `drafting-guidelines/` —— 见
+   `_pattern_hits_segment()` 与 `_pattern_hits_path()` 的区别。
+
+**单语料覆盖**：`corpora:` 段按语料**显示名**写（配置文件给人看），
+`MultiNavigator.__init__` 里调一次 `bind_corpora()` 绑定到内部 id。
+覆盖项与全局**合并**（`flatten_for`），不是替换。
+
+**坏配置不致命**：`PolicyError` 由 `nav/route._bind_policy` 接住 → 退回空策略
+→ 打一行 stderr → 记进 `errors.jsonl`（`where: policy.load`）。服务器照常起。
+
+**可观测性**：`QueryTrace.policy()` 把当次生效的策略写进 `queries.jsonl`；
+`/api/state` 的 `policy` 字段给 UI；`scripts/07_logs.py --id` 会打印出来。
+「我加了权重但没效果」因此有确定答案：要么文件没找到（`source` 为空），
+要么加载了但权重没匹配上。
+
+```bash
+$PY -m nav.route index/demo "..." --show-policy
+$PY -m nav.route index/demo "..." --policy /path/x.yaml --corpus 友邦保险
+```
+
+覆盖测试：`tests/test_policy.py`（128 条，stub 掉 LLM，只写临时目录）。
 
 ---
 
@@ -701,7 +758,10 @@ PDF 解析用 `ProcessPoolExecutor(mp_context=spawn)`。因此：
   flash 让没有书签、没配 Azure 的 PDF 也能拿到真实章节树
   （AIA FY2022: 312 个 'Page N' → 469 个节点、5 层、真实标题）
 - 目录结构质量决定上限：如果是平铺的几千个文件，第 1 级会退化
-- 回退用词元匹配，对同义词无能为力
+- 回退用词元匹配，同义词靠 `aliases:` 枚举；泛化需要 embedding 预筛，
+  会把相似度问题引回来，权衡后保持确定性
+- 策略只是「更倾向」，不是「会推理」：救不回答案本身不存在的问题；
+  写错的 `exclude` 会真的藏掉目录（所以按路径整段匹配，不按子串）
 
 ---
 
@@ -730,13 +790,18 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（183 条断言，不联网，约 20 秒）
+# 5. 跑离线测试（470 条断言，不联网，约 30 秒）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
 $PY -u tests/test_backend.py      # 25 条：后端解析/按页切分/PageIndex 接管
-$PY -u tests/test_registry.py     # 67 条：注册表/变更检测/watcher/投放区
-$PY -u tests/test_llm_retry.py    # 23 条：token 预算升级/流式回退
+$PY -u tests/test_registry.py     # 135 条：注册表/变更检测/watcher/投放区
+$PY -u tests/test_llm_retry.py    # 39 条：token 预算升级/流式回退
 $PY -u tests/test_debuglog.py     # 40 条：日志记录/过滤/轮转
+$PY -u tests/test_policy.py       # 128 条：路由策略（含「空策略 = 原行为」）
+$PY -u tests/test_suggest.py      # 75 条：示例问题生成/缓存/失效
 #   注：下载样例 PDF 后 test_backend 会多 2 条（27 条）
+
+# 5b. 看当前生效的路由策略（应指向 config/routing_policy.yaml）
+$PY -u -m nav.route samples/test_index "x" --show-policy
 
 # 6. 检查 Azure DI 配置（未配 key 会给出可操作的报错，这是预期的）
 $PY -u scripts/06_azure_extract.py data/aia_reports --check
@@ -770,6 +835,8 @@ pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/logs/weba
 | `index/*` | ❌ 排除 | **集中索引库**：registry + 各语料的 manifest/trees。纯生成物，可重建 |
 | `results/*` | ❌ 排除 | 日志与问答结果，纯生成物 |
 | `.env` | ❌ 排除 | **含真实密钥** |
+| `config/routing_policy.yaml` | ✅ **包含** | 业务路由策略。随包给一份保守默认（只启用 `_drafts`/`templates` 这类排除），
+业务方在**原地改**，或用 `SUPERINDEX_ROUTING_POLICY` 指到仓库外 |
 | `__pycache__` / `.DS_Store` | ❌ 排除 | 缓存与垃圾 |
 | `samples/test_index/` | ✅ 包含（164 KB） | 虽是生成物，但让 `nav/` 能立刻演示 |
 
@@ -779,6 +846,8 @@ pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/logs/weba
 ✅ **已加 `.gitignore`**：排除 `.env`、`PageIndex/`、`data/**/*.pdf`、`index/*`、`results/*`、
 `__pycache__`、`.DS_Store`
 ✅ **`PageIndex/` 不 vendor，README §0 给了 clone 步骤**
+✅ **业务路由逻辑已外置**到 `config/routing_policy.yaml`（见 5.14）——
+route.py 里不再写死「法定年报在哪个目录」这类业务知识
 
 待办：
 
