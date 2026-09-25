@@ -200,7 +200,11 @@ frontend framework, just a stdlib HTTP server and one HTML file.
   come back as a dropdown when the box is focused, so a repeat is one click.
 - **Answers stay auditable.** The chat shows the navigation trace — which
   directories, files and sections the model chose, and which fallback fired if
-  it hesitated — alongside the streamed answer and its sources.
+  it hesitated — alongside the streamed answer and its sources. Sources are
+  **grouped by document**, one row each, with the hit sections as inline chips:
+  a document that supplies four sections would otherwise repeat its full path
+  four times. On a real 12-hit / 4-document query that is 244px of citation
+  down to 145px.
 - **You can see it thinking, and you can stop it.** Reasoning models spend most
   of their wall clock on tokens nobody asked for: on our own measurement of
   `deepseek-flash`, **240 of 269 streamed chunks were thinking and 27 were
@@ -210,7 +214,10 @@ frontend framework, just a stdlib HTTP server and one HTML file.
   what it made of it — and two separate disclosures just make you open the same
   thing twice. It starts filling within the first second and folds away the
   moment the answer begins, leaving `检索过程 · 思考 498 字` behind as the
-  summary. When a model spirals — the slowest query we recorded took **114 s**
+  summary. The box has a **fixed height** and scrolls internally: when its
+  height tracked its content, every new retrieval step — and the thinking panel
+  appearing — pushed the rest of the page down while the answer was still
+  streaming. When a model spirals — the slowest query we recorded took **114 s**
   on a 3 KB context — Send becomes **Stop**, and a cancelled query is logged as
   a cancel rather than an error.
 
