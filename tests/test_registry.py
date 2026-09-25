@@ -11,6 +11,7 @@ LLM is called. Fixtures are built in a temp directory, never in the repo.
 from __future__ import annotations
 
 import contextlib
+import re
 import shutil
 import sys
 import tempfile
@@ -23,7 +24,8 @@ sys.path.insert(0, str(ROOT))
 from nav.registry import (  # noqa: E402
     Corpus, Registry, STATUS_ERROR, STATUS_READY,
 )
-from nav.route import MultiNavigator, merge_manifests  # noqa: E402
+from nav.route import (MultiNavigator, Result, build_context,  # noqa: E402
+                       display_path, merge_manifests)
 from nav.store import Manifest  # noqa: E402
 
 PASS, FAIL = [], []
@@ -298,6 +300,51 @@ def _watcher_body(tmp: Path) -> None:
     reg.stop_watcher()
 
 
+def test_display_path(tmp: Path) -> None:
+    print("\n[display_path —— 别把 corpus id 喂给模型]")
+    names = {"610b3c99": "友邦保险", "5a4a0b3b": "aia_reports"}
+
+    check("替换前缀为名称",
+          display_path("610b3c99/2024/annual/A.md", names)
+          == "友邦保险 / 2024/annual/A.md",
+          display_path("610b3c99/2024/annual/A.md", names))
+    check("只有 id 没有子路径",
+          display_path("610b3c99", names) == "610b3c99",
+          display_path("610b3c99", names))
+    check("未知 id 原样返回",
+          display_path("zzzzzzzz/x.md", names) == "zzzzzzzz/x.md")
+    check("没有 names 时原样返回",
+          display_path("610b3c99/x.md", None) == "610b3c99/x.md")
+    check("空串安全", display_path("", names) == "")
+
+    # 端到端：prompt 里绝不能出现 8 位 id
+    reg = new_registry(tmp / "display")
+    a = reg.add(str(make_corpus(tmp / "display" / "src", "one", SAMPLE)), name="语料一")
+    reg.index(a.id, summarize=False)
+    nav = reg.navigator([a.id])
+    check("MultiNavigator 带上了 names", nav.names.get(a.id) == "语料一",
+          str(nav.names))
+    check("nav.display() 生效",
+          nav.display(f"{a.id}/2024/annual/A.md") == "语料一 / 2024/annual/A.md",
+          nav.display(f"{a.id}/2024/annual/A.md"))
+
+    res = Result(question="q")
+    fe = nav.m.files[f"{a.id}/2024/annual/A.md"]
+    chapters, _ = nav._load_tree(fe)
+    if chapters:
+        res.sections = [(fe, chapters[0])]
+        ctx, srcs = build_context(res, nav)
+        check("prompt 里没有 8 位 id",
+              not re.search(r"\b[0-9a-f]{8}/", ctx), ctx[:120])
+        check("prompt 用可读路径",
+              "语料一 / 2024/annual/A.md" in ctx, ctx[:120])
+        check("sources 保留原始 file",
+              srcs[0]["file"] == f"{a.id}/2024/annual/A.md", srcs[0]["file"])
+        check("sources 带 display",
+              srcs[0]["display"] == "语料一 / 2024/annual/A.md",
+              srcs[0]["display"])
+
+
 def test_corpus_tree(tmp: Path) -> None:
     print("\n[corpus_tree —— 给 UI 的文档树]")
     reg = new_registry(tmp / "tree")
@@ -388,6 +435,7 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_display_path(tmp)
         test_corpus_tree(tmp)
         test_data_root_dropzone(tmp)
     finally:

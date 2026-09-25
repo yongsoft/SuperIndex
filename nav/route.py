@@ -88,10 +88,18 @@ class Navigator:
         self.model = model
         self.effort = effort
         self.verbose = verbose
+        # corpus_id -> display name. Single-corpus navigators leave it empty and
+        # paths pass through unchanged; MultiNavigator fills it in.
+        self.names: dict[str, str] = {}
 
     def _say(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def display(self, rel_path: str) -> str:
+        """Rel path with the corpus id replaced by its name, for anything the
+        model or a human reads. Use `fe.rel_path` only for internal lookups."""
+        return display_path(rel_path, self.names)
 
     def _load_tree(self, fe: FileEntry) -> tuple[list[Chapter], list[str]]:
         """Fetch a document's chapter tree and source lines.
@@ -284,9 +292,9 @@ class Navigator:
         lines = []
         for i, f in enumerate(pool):
             if detail == "full" and f.summary:
-                lines.append(f"[F{i}] {f.rel_path} — {f.summary}")
+                lines.append(f"[F{i}] {self.display(f.rel_path)} — {f.summary}")
             else:
-                lines.append(f"[F{i}] {f.rel_path}")
+                lines.append(f"[F{i}] {self.display(f.rel_path)}")
         years = year_hints(question)
         hint = (f"\n注意：问题提到的年份是 {', '.join(years)}，文件名或摘要必须与之匹配。"
                 if years else "")
@@ -357,7 +365,7 @@ class Navigator:
                 lines.append(f"[{i}] {pad}{c.title} ({span})")
         prompt = (
             "你在定位一份文档里的具体章节。只输出 JSON。\n\n"
-            f"用户问题: {question}\n文件: {fe.rel_path}\n\n"
+            f"用户问题: {question}\n文件: {self.display(fe.rel_path)}\n\n"
             f"章节列表（缩进表示层级，{len(flat)} 个节点）:\n"
             + "\n".join(lines) + "\n\n"
             "任务：选出最可能包含答案的章节编号。\n"
@@ -496,6 +504,7 @@ class MultiNavigator(Navigator):
         self.verbose = verbose
         self.index_dir = Path(".")            # unused; kept for the base class
         self.m, self._index_dirs = merge_manifests(corpora)
+        self.names = {cid: name for cid, _d, name, _s in corpora}
 
     def _load_tree(self, fe: FileEntry) -> tuple[list[Chapter], list[str]]:
         cid = fe.rel_path.split("/", 1)[0]
@@ -509,22 +518,43 @@ class MultiNavigator(Navigator):
         return [c[0] for c in self._corpora]
 
 
+def display_path(rel_path: str, names: Optional[dict[str, str]] = None) -> str:
+    """`610b3c99/2024/annual/A.md` -> `友邦保险 / 2024/annual/A.md`.
+
+    Rel paths are namespaced with the corpus id so several corpora can share one
+    routing tree. That id is an internal address and must never reach the model:
+    whatever path appears in the prompt is what the model cites, so it would
+    answer with `610b3c99/2024/annual/...` instead of something a human can use.
+    """
+    if not rel_path or not names:
+        return rel_path
+    head, sep, tail = rel_path.partition("/")
+    name = names.get(head)
+    return f"{name} / {tail}" if sep and name else rel_path
+
+
 def build_context(res: Result, nav: Navigator, *,
+                  names: Optional[dict[str, str]] = None,
                   per_section_chars: int = 2600,
                   total_chars: int = 20000) -> tuple[str, list[dict]]:
     """Turn a Result into an answer prompt body plus a source list.
+
+    `names` maps corpus id to display name; pass it so the prompt carries
+    readable paths rather than internal ids.
 
     Truncation is deliberate and budgeted: sections are added in relevance
     order until the total would be exceeded, so a long tail of marginal
     sections cannot crowd out the best one.
     """
+    names = names if names is not None else getattr(nav, "names", None)
     blocks: list[str] = []
     sources: list[dict] = []
     used = 0
     for fe, ch in res.sections:
         body = nav.get_content(fe, ch, max_chars=per_section_chars)
+        shown = display_path(fe.rel_path, names)
         block = (f"--- source {len(sources) + 1} ---\n"
-                 f"file: {fe.rel_path}\n"
+                 f"file: {shown}\n"
                  f"section: {ch.title}\n"
                  f"lines: {ch.start}-{ch.end}\n\n{body}")
         if used + len(block) > total_chars:
@@ -532,7 +562,8 @@ def build_context(res: Result, nav: Navigator, *,
         blocks.append(block)
         used += len(block)
         sources.append({
-            "file": fe.rel_path,
+            "file": fe.rel_path,        # the real address, for follow-up lookups
+            "display": shown,           # what to show a human
             "title": ch.title,
             "start": ch.start,
             "end": ch.end,

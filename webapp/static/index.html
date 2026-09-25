@@ -246,6 +246,18 @@ const md = s => esc(s)
   .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   .replace(/`([^`\n]+)`/g, '<code>$1</code>');
 
+// Paths inside the navigator are namespaced with the corpus id so several
+// corpora can share one tree. Show the corpus *name* instead — nobody wants to
+// read "610b3c99/2024/annual/…".
+const nameOf = id => (S.corpora.find(c => c.id === id) || {}).name || '';
+function pretty(rel){
+  if (!rel) return rel;
+  const i = rel.indexOf('/');
+  if (i < 0) return rel;                 // "全树 29 个目录" 之类，原样返回
+  const nm = nameOf(rel.slice(0, i));
+  return nm ? nm + ' / ' + rel.slice(i + 1) : rel;
+}
+
 // ── state ───────────────────────────────────────────────────────────────
 async function load(){
   try{ S = await (await fetch('/api/state')).json(); }catch(e){ return; }
@@ -423,10 +435,10 @@ async function ask(){
         let d; try{ d = JSON.parse(dt); }catch{ continue; }
         if (ev === 'stage') stg.textContent = d.text;
         else if (ev === 'nav') steps.insertAdjacentHTML('beforeend',
-          `<div class="step">[${d.level==='dir'?'dir':'section'}] ${esc(d.where)}
-           <br>→ <b>${esc((d.picked||[]).join('、'))}</b>${d.note?` <span class="fb">(${esc(d.note)})</span>`:''}</div>`);
+          `<div class="step">[${d.level==='dir'?'dir':'section'}] ${esc(pretty(d.where))}
+           <br>→ <b>${esc((d.picked||[]).map(pretty).join('、'))}</b>${d.note?` <span class="fb">(${esc(d.note)})</span>`:''}</div>`);
         else if (ev === 'sources') srcs.innerHTML = (d||[]).map(s =>
-          `<div>${esc(s.file)} · ${esc(s.title)} (${s.start}-${s.end})</div>`).join('') || '';
+          `<div>${esc(s.display || pretty(s.file))} · ${esc(s.title)} (${s.start}-${s.end})</div>`).join('') || '';
         else if (ev === 'answer'){ stg.textContent=''; acc += d.delta; bub.innerHTML = md(acc); }
         else if (ev === 'error'){ stg.textContent=''; bub.innerHTML += `<div class="err">${esc(d.message)}</div>`; }
         else if (ev === 'done'){ stg.textContent = d.ok ? `Done · ${d.ms} ms` : 'Incomplete'; }
