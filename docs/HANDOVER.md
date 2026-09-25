@@ -39,7 +39,8 @@ bash data/aia_reports/download.sh     # 唯一还需要单独获取的东西（1
 |---|---|---|
 | PDF 建树 + 索引（PageIndex） | ✅ | `scripts/01_build_trees.py`、`02_qa_test.py` |
 | 财报问答（命令行） | ✅ | `scripts/02_qa_test.py` |
-| 财报问答（Web 界面，流式） | ✅ | `webapp/server.py`（**当前正在运行**，端口 8787） |
+| 目录驱动的 Web 界面（加目录/看状态/按目录提问） | ✅ | `webapp/server.py` + `nav/registry.py`（端口 8787） |
+| 目录变化自动监控 + 增量重建 | ✅ | `nav/registry.py` 的 watcher |
 | 两级导航检索（目录 → 文档 → 章节） | ✅ | `nav/` |
 | PDF → Markdown（Azure Document Intelligence） | ⚠️ 逻辑已验证，**未用真实凭据跑过** | `extractors/azure_di.py`、`scripts/06_azure_extract.py` |
 | 查询延迟诊断 | ✅ | `scripts/profile_query.py` |
@@ -203,16 +204,18 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │
 ├── tests/
 │   ├── test_azure_di.py       azure_di 的离线测试（28 断言，不联网）
-│   └── test_backend.py        后端解析的离线测试（27 断言，不联网）
+│   ├── test_backend.py        后端解析的离线测试（25 断言，不联网）
+│   └── test_registry.py       语料注册表/watcher 的离线测试（57 断言，不联网）
 │
-├── webapp/                    Web 问答界面
-│   ├── server.py              ★ 标准库 http.server，SSE 流式，端口 8787
+├── webapp/                    ★ 目录驱动的 Web 界面
+│   ├── server.py              标准库 http.server + SSE，端口 8787
 │   └── static/index.html      单文件前端，原生 JS
 │
 ├── nav/                       ★ 两级导航检索包（本次主要产出）
 │   ├── README.md              包文档，务必读
-│   ├── llm.py                 LLM 调用封装（JSON 提取+修复+重试）
+│   ├── llm.py                 LLM 调用封装（JSON 提取+修复+重试 / 流式）
 │   ├── store.py               数据模型与持久化
+│   ├── registry.py            ★ 语料注册表：多目录、后台索引、变化监控
 │   ├── build.py               CLI：建索引
 │   └── route.py               CLI：两级导航查询
 │
@@ -271,15 +274,31 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
    `out_file.relative_to(ROOT)` 在路径不在项目内时抛 `ValueError`，
    已改成 try/except 兜底。**注意：`--out` 建议用项目内相对路径**
 
-### 5.4 `webapp/` 新增
+### 5.4 `webapp/` —— 目录驱动的 Web 界面（已重写）
 
-从零实现的 Web 问答界面。三个关键点：
+**注意：这一版把范围模型从「已索引的 PDF 文档」换成了「注册的目录」。**
+原 PageIndex 文档流仍可通过 `scripts/02_qa_test.py` 命令行使用。
 
-1. **零额外依赖** —— 用 Python 标准库 `http.server` + `ThreadingHTTPServer`，
-   没有引入 FastAPI/uvicorn。端口 **8787**（8000 被其他项目占用）
-2. **必须迭代 `.events` 而不是文本流** —— 只有 events 才带 `tool_call`/`tool_result`，
-   这正是「可追溯」卖点的来源
+三个关键点：
+
+1. **零额外依赖** —— 标准库 `http.server` + `ThreadingHTTPServer`，
+   没有 FastAPI/uvicorn，前端是一个 HTML 文件、无构建步骤。端口 **8787**
+2. **提问走 `nav/` 而不是 PageIndexClient** —— 因为功能核心是「目录」。
+   服务端用 `nav` 的公开方法编排（`find_files` → `find_sections`），
+   每完成一步就发一个 SSE 事件，所以 UI 能实时显示模型在收窄范围
 3. **`reasoning_effort` 可配** —— 见下
+
+API 一览（全部可脚本化）：
+
+| | |
+|---|---|
+| `GET /api/state` | 语料列表、状态、watcher 状态、模型 |
+| `GET /api/browse?path=` | 列子目录（**只读、只给名字，不读文件内容**） |
+| `POST /api/corpora` | 注册目录并开始后台索引 |
+| `PATCH /api/corpora/<id>` | 改名 |
+| `DELETE /api/corpora/<id>` | 移除并删除索引 |
+| `POST /api/corpora/<id>/reindex` | 强制重建（`force` / `deep_index`） |
+| `POST /api/ask` | SSE：`stage` / `nav` / `sources` / `answer` / `done` |
 
 ```python
 REASONING_EFFORT = os.getenv("PAGEINDEX_REASONING_EFFORT", "low").strip() or None
@@ -387,6 +406,45 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 
 - `samples/test_corpus/` — 16 文件 / 29 目录 / 228 章节节点的合成语料
 - `samples/test_index/` — 已建好且**带 LLM 摘要**的索引，可直接查询验证
+
+### 5.8 `nav/registry.py` —— 多语料注册表与监控（新增）
+
+把 `nav` 从「一次性 CLI」变成 UI 能驱动的东西。
+
+| 能力 | 实现 |
+|---|---|
+| 注册目录 | `add()`，校验绝对路径/存在性/重复/**拒绝项目内目录** |
+| 后台索引 | `index_async()` + 线程；`status`/`stage` 可轮询 |
+| 变化监控 | `start_watcher()` 轮询，stat-only 比对，**只重建变化的文件** |
+| 多语料查询 | `navigator(ids)` → `MultiNavigator`（见 5.9） |
+| 状态持久化 | `results/corpora.json`（构建产物，已 gitignore） |
+
+**四个关键设计（都是踩出来的）**：
+
+1. **增量扫描必须跳过未变文件** —— `scan()` 新增 `previous` 参数。
+   否则 watcher 每次轮询都会把**每个 PDF 重新发给 Azure DI**，成本爆炸。
+   同时新增 `stats_only` 用于「只问有没有变化」。
+2. **变更文件的旧摘要必须丢掉** —— 顺手修了 `_build()` 里的 bug：原来无条件
+   `fe.summary = old.summary`，改过的文件会带着**描述旧内容的摘要**参与路由。
+3. **watcher 沿用语料自身的设置** —— 注册时关掉文件描述，watcher 不会偷偷
+   开始调 LLM（`Corpus.summarize_files`）。测试靠这个保持离线。
+4. **`auto_index=False` 是「只检测不动作」** —— 明确成 dry-run 语义，
+   而不是原来的「不索引 pending」（那个语义含糊且实测容易误解）。
+
+其他：目录消失 → `error` + 可读信息；`_prune_orphan_trees()` 清理已删文件的
+章节树，否则删除不回收磁盘。
+
+### 5.9 `nav/route.py` 的多语料支持（新增）
+
+- `merge_manifests()` —— 把 N 个语料合并成一棵路由树，每个语料是顶层伪目录，
+  rel_path 加 `<corpus_id>/` 前缀。**第 1 级仍是一次调用**，且模型能跨语料
+  比较分支
+- `MultiNavigator` —— 只覆写 `_load_tree()`，靠前缀反查该从哪个索引目录加载
+- `build_context()` / `answer_prompt()` —— 按相关性截断（预算内取满），
+  避免长尾章节挤掉最相关的那个
+- `Navigator._load_tree()` 抽成可覆写方法（原来两处硬编码 `self.m.load_tree`）
+
+### 5.10 测试素材（新增）
 
 ---
 
@@ -560,9 +618,11 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（53 条断言，不联网，约 2 秒；下载样例 PDF 后为 55 条）
+# 5. 跑离线测试（110 条断言，不联网，约 10 秒）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
-$PY -u tests/test_backend.py      # 27 条：后端解析/按页切分/PageIndex 接管
+$PY -u tests/test_backend.py      # 25 条：后端解析/按页切分/PageIndex 接管
+$PY -u tests/test_registry.py     # 57 条：注册表/变更检测/watcher（自建临时夹具）
+#   注：下载样例 PDF 后 test_backend 会多 2 条（27 条）
 
 # 6. 检查 Azure DI 配置（未配 key 会给出可操作的报错，这是预期的）
 $PY -u scripts/06_azure_extract.py data/aia_reports --check

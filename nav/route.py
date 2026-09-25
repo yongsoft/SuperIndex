@@ -37,7 +37,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nav import llm  # noqa: E402
-from nav.store import Chapter, FileEntry, Manifest  # noqa: E402
+from nav.store import Chapter, DirEntry, FileEntry, Manifest  # noqa: E402
 
 DIR_TREE_BUDGET = 240        # dirs shown at once in level 1
 FILE_BUDGET = 80             # files shown in one listing
@@ -81,6 +81,14 @@ class Navigator:
     def _say(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def _load_tree(self, fe: FileEntry) -> tuple[list[Chapter], list[str]]:
+        """Fetch a document's chapter tree and source lines.
+
+        Overridden by MultiNavigator, which has to route each lookup to the
+        index directory that owns the document.
+        """
+        return self.m.load_tree(self.index_dir, fe.tree_key)
 
     # ------------------------------------------------------- level 1: files
     def find_files(self, question: str, top_n: int = 5
@@ -314,7 +322,7 @@ class Navigator:
     # ---------------------------------------------------- level 2: chapters
     def find_sections(self, question: str, fe: FileEntry, top_n: int = 6
                       ) -> tuple[list[Chapter], list[Step]]:
-        chapters, _ = self.m.load_tree(self.index_dir, fe.tree_key)
+        chapters, _ = self._load_tree(fe)
         flat = [(c, d) for ch in chapters for c, d in ch.walk()]
         if not flat:
             return [], []
@@ -375,7 +383,7 @@ class Navigator:
     # ------------------------------------------------------------- content
     def get_content(self, fe: FileEntry, chapter: Chapter,
                     max_chars: int = DEFAULT_CONTENT_CHARS) -> str:
-        _, lines = self.m.load_tree(self.index_dir, fe.tree_key)
+        _, lines = self._load_tree(fe)
         if lines:
             return "\n".join(lines[chapter.start - 1:chapter.end])[:max_chars]
         return f"(PDF: {fe.name} 第 {chapter.start}-{chapter.end} 页)"
@@ -395,6 +403,133 @@ class Navigator:
             res.trace += t2
             res.sections += [(fe, s) for s in secs]
         return res
+
+
+def merge_manifests(corpora: list[tuple[str, "str | Path", str, str]]
+                    ) -> tuple[Manifest, dict[str, Path]]:
+    """Merge N corpus indexes into one routing view.
+
+    Each corpus becomes a top-level pseudo-directory named by its id, so the
+    model sees a single tree and can compare branches across corpora in one
+    call — rather than routing each corpus separately and then guessing which
+    result is best.
+
+    `corpora` is a list of `(corpus_id, index_dir, display_name, summary)`.
+    Returns the merged manifest plus a `corpus_id -> index_dir` map, which is
+    what lets `MultiNavigator` find a document's tree file.
+    """
+    import time as _time
+
+    merged = Manifest(root="(merged)", built_at=_time.time())
+    index_dirs: dict[str, Path] = {}
+
+    for cid, index_dir, name, summary in corpora:
+        idir = Path(index_dir)
+        index_dirs[cid] = idir
+        src = Manifest.load(idir)
+
+        merged.dirs[cid] = DirEntry(rel_path=cid, name=name, parent=None,
+                                    summary=summary)
+
+        for rp, d in src.dirs.items():
+            if rp == "":
+                continue                      # the corpus root itself
+            nrp = f"{cid}/{rp}"
+            parent = f"{cid}/{d.parent}" if d.parent else cid
+            merged.dirs[nrp] = DirEntry(rel_path=nrp, name=d.name,
+                                        parent=parent, summary=d.summary)
+            merged.dirs[parent].child_dirs.append(nrp)
+
+        for rp, f in src.files.items():
+            nrp = f"{cid}/{rp}"
+            parent = f"{cid}/{f.parent}" if f.parent else cid
+            merged.files[nrp] = FileEntry(
+                rel_path=nrp, name=f.name, parent=parent, ext=f.ext,
+                size=f.size, mtime=f.mtime, summary=f.summary, meta=f.meta,
+                n_chapters=f.n_chapters, max_depth=f.max_depth,
+                tree_key=f.tree_key)
+            merged.dirs[parent].files.append(nrp)
+
+    for rp in sorted(merged.dirs, key=lambda x: -x.count("/")):
+        d = merged.dirs[rp]
+        d.n_files = len(d.files) + sum(merged.dirs[c].n_files
+                                       for c in d.child_dirs)
+        d.n_dirs = len(d.child_dirs) + sum(merged.dirs[c].n_dirs
+                                           for c in d.child_dirs)
+    return merged, index_dirs
+
+
+class MultiNavigator(Navigator):
+    """Navigator over several corpus indexes at once.
+
+    Only overrides how a document's tree file is located: rel paths are
+    namespaced `<corpus_id>/...`, so the owning index directory is recoverable
+    from the path itself.
+    """
+
+    def __init__(self, corpora: list[tuple[str, "str | Path", str, str]],
+                 model: str = llm.DEFAULT_MODEL, effort: str = llm.DEFAULT_EFFORT,
+                 verbose: bool = True):
+        self._corpora = corpora
+        self.model = model
+        self.effort = effort
+        self.verbose = verbose
+        self.index_dir = Path(".")            # unused; kept for the base class
+        self.m, self._index_dirs = merge_manifests(corpora)
+
+    def _load_tree(self, fe: FileEntry) -> tuple[list[Chapter], list[str]]:
+        cid = fe.rel_path.split("/", 1)[0]
+        idir = self._index_dirs.get(cid)
+        if idir is None:
+            return [], []
+        return self.m.load_tree(idir, fe.tree_key)
+
+    @property
+    def corpus_ids(self) -> list[str]:
+        return [c[0] for c in self._corpora]
+
+
+def build_context(res: Result, nav: Navigator, *,
+                  per_section_chars: int = 2600,
+                  total_chars: int = 20000) -> tuple[str, list[dict]]:
+    """Turn a Result into an answer prompt body plus a source list.
+
+    Truncation is deliberate and budgeted: sections are added in relevance
+    order until the total would be exceeded, so a long tail of marginal
+    sections cannot crowd out the best one.
+    """
+    blocks: list[str] = []
+    sources: list[dict] = []
+    used = 0
+    for fe, ch in res.sections:
+        body = nav.get_content(fe, ch, max_chars=per_section_chars)
+        block = (f"--- source {len(sources) + 1} ---\n"
+                 f"file: {fe.rel_path}\n"
+                 f"section: {ch.title}\n"
+                 f"lines: {ch.start}-{ch.end}\n\n{body}")
+        if used + len(block) > total_chars:
+            break
+        blocks.append(block)
+        used += len(block)
+        sources.append({
+            "file": fe.rel_path,
+            "title": ch.title,
+            "start": ch.start,
+            "end": ch.end,
+        })
+    return "\n\n".join(blocks), sources
+
+
+def answer_prompt(question: str, context: str) -> str:
+    return (
+        "Answer the question using only the sources below.\n"
+        "Cite the file and section you used, and state the reporting period any "
+        "figure belongs to. If the sources do not contain the answer, say so "
+        "plainly instead of guessing.\n\n"
+        f"Question: {question}\n\n"
+        f"Sources:\n{context or '(no sources were retrieved)'}\n\n"
+        "Answer:"
+    )
 
 
 def _ints(value: Any) -> list[int]:

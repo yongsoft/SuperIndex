@@ -202,8 +202,19 @@ def read_document(path: Path, extractor=None) -> tuple[list[Chapter], list[str]]
 
 # ------------------------------------------------------------------- scan
 def scan(root: Path, includes: set[str], excludes: set[str],
-         max_files: Optional[int] = None, extractor=None
+         max_files: Optional[int] = None, extractor=None,
+         previous: Optional[Manifest] = None, stats_only: bool = False
          ) -> tuple[Manifest, dict[str, tuple[list[Chapter], list[str]]]]:
+    """Walk the corpus and build a manifest.
+
+    `previous` enables incremental scanning: a file whose size and mtime match
+    the previous manifest is carried over untouched and its tree is **not**
+    re-extracted. That matters a lot for the watcher — without it, every poll
+    would re-send every PDF to Azure Document Intelligence.
+
+    `stats_only` skips extraction entirely and just records file metadata, so a
+    caller can cheaply ask "did anything change?".
+    """
     root = root.resolve()
     m = Manifest(root=str(root), built_at=__import__("time").time())
     trees: dict[str, tuple[list[Chapter], list[str]]] = {}
@@ -243,6 +254,23 @@ def scan(root: Path, includes: set[str], excludes: set[str],
                 st = fpath.stat()
             except OSError:
                 continue
+
+            prev = previous.files.get(frp) if previous is not None else None
+            if (prev is not None and prev.size == st.st_size
+                    and prev.mtime == st.st_mtime):
+                m.files[frp] = prev          # unchanged: keep entry and its tree
+                entry.files.append(frp)
+                count += 1
+                continue
+            if stats_only:
+                m.files[frp] = FileEntry(
+                    rel_path=frp, name=fn, parent=rp, ext=fpath.suffix.lower(),
+                    size=st.st_size, mtime=st.st_mtime,
+                    tree_key=file_key(frp))
+                entry.files.append(frp)
+                count += 1
+                continue
+
             chapters, lines = read_document(fpath, extractor)
             flat = [c for ch in chapters for c in ch.flatten()]
             fe = FileEntry(
@@ -471,25 +499,25 @@ def _build(root: Path, out: Path, includes: set[str], excludes: set[str],
     if existing.is_file() and (args.summarize_files or args.summarize_chapters):
         print(f"载入已有索引 {existing}")
         m = Manifest.load(out)
-        fresh, trees = scan(root, includes, excludes, args.max_files, extractor)
+        fresh, trees = scan(root, includes, excludes, args.max_files, extractor,
+                            previous=m)
         added, removed = [], []
         for rp, fe in fresh.files.items():
-            if rp in m.files:
-                old = m.files[rp]
-                fe.summary = old.summary
-                fe.meta = old.meta
-                changed = (fe.size != old.size or fe.mtime != old.mtime)
-                if changed:
-                    # content changed: rebuild this tree (its chapter
-                    # summaries are stale, so they are dropped with it)
-                    chs, lines = trees[rp]
-                    m.save_tree(out, fe.tree_key, chs,
-                                lines or None)
-                    added.append(rp + " (changed)")
+            old = m.files.get(rp)
+            if old is not None and rp not in trees:
+                # unchanged: scan already carried the old entry over, summary
+                # and all, and its tree is still on disk. Nothing to do.
+                pass
+            elif old is not None:
+                # content changed. The old summary describes text that no
+                # longer exists, so it must NOT be carried over — otherwise
+                # routing reasons over a description of the previous version.
+                chs, lines = trees[rp]
+                m.save_tree(out, fe.tree_key, chs, lines or None)
+                added.append(rp + " (changed)")
             else:
                 chs, lines = trees[rp]
-                m.save_tree(out, fe.tree_key, chs,
-                            lines or None)
+                m.save_tree(out, fe.tree_key, chs, lines or None)
                 added.append(rp)
             m.files[rp] = fe
         for rp, d in fresh.dirs.items():

@@ -97,6 +97,32 @@ applied from outside at runtime. `git pull` inside `PageIndex/` stays clean.
 No vector store, no embedding model, not even `numpy` in the dependency list.
 Every answer is traceable to a file and a page.
 
+### A UI for managing corpora
+
+`webapp/` is a browser UI over everything above — no build step, no Node, no
+frontend framework, just a stdlib HTTP server and one HTML file.
+
+- **Add directories from the browser.** A read-only directory picker walks the
+  server's filesystem; you never type a path.
+- **Watch indexing happen.** Each corpus shows its own status, current stage,
+  and file / directory / chapter counts. Indexing runs in the background, so the
+  UI stays responsive.
+- **Scope questions by directory.** Indexed corpora are in scope automatically,
+  or tick a subset to narrow it. Multi-corpus questions are routed in one call —
+  the merged tree puts every corpus at the top level, so the model compares
+  branches across corpora instead of guessing.
+- **Changes are picked up automatically.** A watcher polls each directory, and
+  when files are added, edited or deleted it re-extracts only those files and
+  regenerates only their descriptions. Unchanged documents keep their existing
+  summaries, so a one-file edit costs one file's worth of work.
+- **Answers stay auditable.** The chat shows the navigation trace — which
+  directories, files and sections the model chose, and which fallback fired if
+  it hesitated — alongside the streamed answer and its sources.
+
+```bash
+python webapp/server.py          # http://127.0.0.1:8787
+```
+
 ### Diagnostics included
 
 Retrieval quality problems are usually measurable before they are fixable:
@@ -110,17 +136,19 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**53 assertions** across the extraction and navigation layers, with no network
-and no credentials required:
+**53 assertions** across the extraction, navigation and registry layers, with no
+network and no credentials required:
 
 ```bash
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
 python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
+python tests/test_registry.py    # 57 assertions — registry, change detection, watcher
 ```
 
 `test_backend.py` reports 27 once the sample PDFs are present; without them the
 two PDF-dependent assertions skip rather than fail, so the suite is runnable on a
-bare clone.
+bare clone. `test_registry.py` builds its own fixtures in a temp directory and
+indexes with descriptions disabled, so it never calls an LLM.
 
 ---
 
@@ -128,11 +156,11 @@ bare clone.
 
 ```
         ┌──────────────────────────────────────────────┐
-        │  Application    webapp/ chat UI · scripts/   │
+        │  Application    webapp/ directory UI         │
         ├──────────────────────────────────────────────┤
-        │  ADDED BY       extractors/   nav/           │
-        │  SUPERINDEX     where text    corpus→file    │
-        │                 comes from    →section       │
+        │  ADDED BY       extractors/  nav/  registry/ │
+        │  SUPERINDEX     text source  tree  watch +   │
+        │                              walk  status    │
         ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤
         │  UPSTREAM       flash/classic  agent loop    │
         │  (unmodified)   tree building  4 tools       │
@@ -200,6 +228,55 @@ path is nothing at all; for summarisation and QA you need one LLM provider key.
 | `--summarize-files` / `--summarize-chapters` | Generate routing summaries (incremental, LLM-backed) |
 | `--max-files N` | Limit scope while evaluating |
 | `--json` (on `nav.route`) | Machine-readable output: selected files, sections, line ranges |
+
+---
+
+## Web UI
+
+```bash
+python webapp/server.py                      # http://127.0.0.1:8787
+python webapp/server.py --port 9000          # different port
+python webapp/server.py --no-watch           # do not poll for file changes
+python webapp/server.py --watch-interval 10  # poll every 10s instead of 30s
+```
+
+Then, in the browser: **添加目录** → pick a directory → wait for `ready` → ask.
+
+A question can also be deep-linked, which is handy for sharing:
+
+```
+http://127.0.0.1:8787/?q=<url-encoded question>
+```
+
+### The API underneath
+
+The UI is a thin client over six endpoints, so anything it does is scriptable:
+
+| | |
+|---|---|
+| `GET /api/state` | corpora, statuses, watcher state, models |
+| `GET /api/browse?path=` | list sub-directories (read-only, names only) |
+| `POST /api/corpora` | `{path, name?, deep_index?}` — register and start indexing |
+| `PATCH /api/corpora/<id>` | `{name}` — rename |
+| `DELETE /api/corpora/<id>` | unregister and delete the index |
+| `POST /api/corpora/<id>/reindex` | `{deep_index?, force?}` |
+| `POST /api/ask` | `{question, corpus_ids?}` → SSE: `stage`, `nav`, `sources`, `answer`, `done` |
+
+### How indexing and watching work
+
+- Each corpus gets **its own index directory**, so one failing corpus cannot
+  corrupt another and removal is a clean delete.
+- Indexing is **incremental**. A file whose size and mtime are unchanged is not
+  re-extracted — which matters because otherwise every watcher tick would
+  re-send every PDF to Azure Document Intelligence.
+- Only files **without** a description get summarised, so a single-file edit
+  costs one summary rather than a full re-index.
+- A corpus registered with descriptions off **stays** off: the watcher honours
+  the corpus's own settings rather than assuming an LLM is available.
+- If a registered directory disappears, the corpus is marked `error` with a
+  readable message instead of silently returning nothing.
+- Registering a directory **inside the project** is refused — it would recurse
+  into `results/` while that same index is being written.
 
 ---
 

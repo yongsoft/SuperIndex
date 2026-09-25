@@ -95,3 +95,44 @@ def chat_json(prompt: str, model: str = DEFAULT_MODEL, effort: str = DEFAULT_EFF
     if parsed is None:
         raise RuntimeError(f"reply contained no JSON: {raw[:200]!r}")
     return parsed
+
+
+def chat_stream(prompt: str, model: str = DEFAULT_MODEL,
+                effort: str = DEFAULT_EFFORT, max_tokens: int = 2048):
+    """Yield answer deltas as they arrive.
+
+    Used by the web UI, where waiting for the whole completion makes a
+    multi-second answer feel broken. Falls back to a single chunk if the
+    provider does not support streaming, so callers can always treat this as
+    an iterator of strings.
+    """
+    litellm = _litellm()
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "stream": True}
+    if effort:
+        kwargs["reasoning_effort"] = effort
+    resp = litellm.completion(model=model,
+                              messages=[{"role": "user", "content": prompt}],
+                              **kwargs)
+    for chunk in resp:
+        try:
+            delta = chunk.choices[0].delta.content
+        except (AttributeError, IndexError):
+            delta = None
+        if delta:
+            yield delta
+
+
+def chat_stream_text(prompt: str, model: str = DEFAULT_MODEL,
+                     effort: str = DEFAULT_EFFORT, max_tokens: int = 2048):
+    """chat_stream with a non-streaming fallback, always yielding at least once."""
+    got = False
+    try:
+        for delta in chat_stream(prompt, model=model, effort=effort,
+                                 max_tokens=max_tokens):
+            got = True
+            yield delta
+    except Exception:  # noqa: BLE001 - provider may not stream; fall through
+        if got:
+            raise
+    if not got:
+        yield chat(prompt, model=model, effort=effort, max_tokens=max_tokens)

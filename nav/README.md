@@ -135,6 +135,45 @@ index/
 - 完整目录树 listing 8.9K 字符
 - 全树路径与逐层下钻路径都能正确定位到 `公司07/2023/interim/公司07_2023_interim.md`
 
+## 多语料：`registry.py`
+
+上面的 CLI 是一次性建索引 + 查询。要让 UI 驱动（注册目录、看状态、自动跟进
+文件变化），用 `nav/registry.py`。
+
+```python
+from nav.registry import Registry
+
+reg = Registry()                                  # 状态存 results/corpora.json
+c = reg.add("/data/reports", name="年报库")        # 每个语料一个独立索引目录
+reg.index_async(c.id)                             # 后台建索引，状态可轮询
+reg.start_watcher(interval=30)                    # 轮询文件变化并自动增量重建
+
+nav = reg.navigator([c.id])                       # 或多语料：reg.navigator()
+res = nav.run("2024 年全年股息是多少？")
+```
+
+**多语料查询**走 `MultiNavigator`：把 N 个语料的 manifest 合并成一棵路由树，
+每个语料成为顶层的一个伪目录。这样第 1 级仍然是**一次调用**，而且模型能跨语料
+比较分支，而不是分别路由再猜哪个结果更好。
+
+```python
+from nav.route import MultiNavigator, build_context, answer_prompt
+nav = MultiNavigator([("id1", "/path/idx1", "语料一", "摘要")])
+res = nav.run(question)
+context, sources = build_context(res, nav)        # 按相关性截断，预算内取满
+```
+
+### 设计要点
+
+| | |
+|---|---|
+| **一个语料一个索引** | 互不污染；某个语料失败不影响其他；删除就是删目录 |
+| **增量重建** | `scan(previous=...)` 跳过 size+mtime 未变的文件，**不重新抽取**。否则 watcher 每次轮询都会把每个 PDF 重发给 Azure DI |
+| **只补缺失的摘要** | 有描述的跳过，所以改一个文件只花一个文件的摘要钱 |
+| **沿用语料自身设置** | 注册时关掉文件描述，watcher 就不会偷偷开始调 LLM |
+| **拒绝项目内目录** | 否则会递归进 `results/`，边写索引边读自己 |
+| **目录消失 → error** | 带可读错误信息，而不是静默返回空结果 |
+
 ## 已知限制
 
 - **章节级摘要需要 LLM**，上千文件的语料是一次性成本。没有摘要时章节定位
