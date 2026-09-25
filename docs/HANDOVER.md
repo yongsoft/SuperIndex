@@ -13,7 +13,8 @@ bash data/aia_reports/download.sh     # 唯一还需要单独获取的东西（1
 
 > `PageIndex/` **已随仓库分发**（vendored，锁定 upstream commit `71714e8`），
 > 所以一次 clone 就能跑，不需要 `--recursive` 也不需要手动 clone 上游。
-> 仓库里**不包含** `.env`（含密钥）、`data/*.pdf`（27MB）、`results/` 下的生成物。
+> 仓库里**不包含** `.env`（含密钥）、`data/*.pdf`（27MB）、`index/` 与 `results/`
+> 下的生成物。
 > `PageIndex/` 里被剥掉了 examples/assets/cookbook/tests（约 56MB），
 > 详见 `PageIndex/UPSTREAM.md`。
 
@@ -231,11 +232,18 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── test_corpus/               16 文件 / 29 目录的合成语料
 │   └── test_index/                已建好的 nav 索引（带摘要，可直接查）
 │
-└── results/                   产物与日志
-    ├── pageindex_store/       ★ PageIndex 索引（3 份文档）
-    ├── trees/                 10 份 PDF 的离线结构树（阶段1产物）
-    ├── qa_results*.json       问答结果
-    └── *.log                  各种运行日志（webapp.log 有 144KB，可清）
+├── index/                     ★ 集中索引库（构建产物，gitignore）
+│   ├── README.md                  布局说明（**提交**）
+│   ├── registry.json              语料注册表：源路径 + 状态 + 统计
+│   ├── corpora/<id>/              UI 注册的语料，一个语料一个目录
+│   │   ├── manifest.json            目录树 + 文件描述
+│   │   └── trees/<key>.json         章节树
+│   ├── pageindex/                 PageIndex 文档库（3 份文档）
+│   └── trees/                     10 份 PDF 的离线结构树（阶段1产物）
+│
+└── results/                   实验产物（日志与问答结果）
+    ├── logs/                      各种运行日志（webapp.log 144KB，可清）
+    └── qa_results*.json           问答结果
 ```
 
 ---
@@ -417,7 +425,7 @@ python -m nav.build corpus_md --out corpus_index --summarize-files
 | 后台索引 | `index_async()` + 线程；`status`/`stage` 可轮询 |
 | 变化监控 | `start_watcher()` 轮询，stat-only 比对，**只重建变化的文件** |
 | 多语料查询 | `navigator(ids)` → `MultiNavigator`（见 5.9） |
-| 状态持久化 | `results/corpora.json`（构建产物，已 gitignore） |
+| 状态持久化 | `index/registry.json`；索引在 `index/corpora/<id>/`（构建产物，已 gitignore） |
 
 **四个关键设计（都是踩出来的）**：
 
@@ -581,7 +589,7 @@ PDF 解析用 `ProcessPoolExecutor(mp_context=spawn)`。因此：
 | 缩短节点摘要 | 摘要平均 **1,167 字符**，占树的 **89%**。压到 300 字符可让树从 113K → ~35K tokens，9 片分页 → 1–2 片 |
 | `nav/` 上真实语料验证 | 目前只用合成语料测过 |
 | Dify 方案落地 | 见 `docs/dify-improvement-plan.md`，建议从「加 period 元数据」开始 |
-| 清理 `results/` | `webapp.log` 144KB、`qa_run.crashed.log` 17KB 等可删 |
+| 清理 `results/logs/` | `webapp.log` 144KB、`qa_run.crashed.log` 17KB 等可删 |
 | 删除遗留脚本 | `scripts/01_build_index.py`、`scripts/02_qa.py` |
 
 ### 8.3 `nav/` 的已知限制
@@ -608,7 +616,7 @@ $PY -m pip show pageindex | grep -E "Version|Location"
 # 2. 确认索引还在（应打印 3 份）
 $PY -c "
 import json; from pathlib import Path
-d=json.loads(Path('results/pageindex_store/manifest.json').read_text())['docs']
+d=json.loads(Path('index/pageindex/manifest.json').read_text())['docs']
 print(len(d), '份已索引')"
 
 # 3. 跑一道题验证端到端（约 5-10 秒；--out 用项目内相对路径）
@@ -634,7 +642,7 @@ $PY webapp/server.py     # → http://127.0.0.1:8787
 
 **当前 Web 服务已在运行**（端口 8787）。如需重启：
 ```bash
-pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/webapp.log 2>&1 &
+pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/logs/webapp.log 2>&1 &
 ```
 
 ---
@@ -653,7 +661,8 @@ pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/webapp.lo
 |---|---|---|
 | `PageIndex/` | ✅ **包含**（2.1 MB / 113 文件） | vendored，锁定 `71714e8`；剥掉了 examples/assets/cookbook/tests |
 | `data/aia_reports/*.pdf` | ❌ 排除（27 MB） | 用 `download.sh` 拉取，URL 有效 |
-| `results/*` | ❌ 排除（4 MB） | 纯生成物，可重建 |
+| `index/*` | ❌ 排除 | **集中索引库**：registry + 各语料的 manifest/trees。纯生成物，可重建 |
+| `results/*` | ❌ 排除 | 日志与问答结果，纯生成物 |
 | `.env` | ❌ 排除 | **含真实密钥** |
 | `__pycache__` / `.DS_Store` | ❌ 排除 | 缓存与垃圾 |
 | `samples/test_index/` | ✅ 包含（164 KB） | 虽是生成物，但让 `nav/` 能立刻演示 |
@@ -661,7 +670,7 @@ pkill -f "webapp/server.py" && nohup $PY -u webapp/server.py > results/webapp.lo
 ### 已完成 / 待办
 
 ✅ **已建 git 仓库并推送到 GitHub**：https://github.com/yongsoft/SuperIndex（私有）
-✅ **已加 `.gitignore`**：排除 `.env`、`PageIndex/`、`data/*.pdf`、`results/*`、
+✅ **已加 `.gitignore`**：排除 `.env`、`PageIndex/`、`data/**/*.pdf`、`index/*`、`results/*`、
 `__pycache__`、`.DS_Store`
 ✅ **`PageIndex/` 不 vendor，README §0 给了 clone 步骤**
 

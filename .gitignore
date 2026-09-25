@@ -21,10 +21,17 @@ PageIndex/tests/
 data/**/*.pdf
 data/*.pdf
 
+# ─── central index store ───────────────────────────────────────────────────
+# Every tree and index this project builds lives under index/, kept separate
+# from the source files it describes (see index/README.md). It is build output:
+# reproducible, and it grows with every corpus registered.
+index/*
+!index/.gitkeep
+!index/README.md
+
 # ─── generated outputs ─────────────────────────────────────────────────────
-# Everything under results/ is reproducible from the scripts. The PageIndex
-# doc store and the offline trees cost a little API spend to rebuild, but they
-# are build output and do not belong in git.
+# Everything under results/ is reproducible from the scripts: logs and QA
+# result files. Build output, does not belong in git.
 results/*
 !results/.gitkeep
 

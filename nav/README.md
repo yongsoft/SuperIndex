@@ -19,19 +19,23 @@
 PY=.venv/bin/python          # after: python3 -m venv .venv && source .venv/bin/activate
 
 # 1. 建结构索引 —— 免费、无 LLM，上千文件也是秒级
-$PY -m nav.build /path/to/reports --out index/
+$PY -m nav.build /path/to/reports --out index/demo
 
 # 2. 生成路由用摘要（文件 + 目录级）      [LLM]
-$PY -m nav.build /path/to/reports --out index/ --summarize-files
+$PY -m nav.build /path/to/reports --out index/demo --summarize-files
 
 # 3. 生成章节级摘要                        [LLM]
-$PY -m nav.build /path/to/reports --out index/ --summarize-chapters
+$PY -m nav.build /path/to/reports --out index/demo --summarize-chapters
 
 # 查询
-$PY -m nav.route index/ "友邦保险 2024 年全年的每股股息是多少？"
-$PY -m nav.route index/ "..." --show-content      # 附章节原文
-$PY -m nav.route index/ "..." --json              # 机器可读
+$PY -m nav.route index/demo "友邦保险 2024 年全年的每股股息是多少？"
+$PY -m nav.route index/demo "..." --show-content      # 附章节原文
+$PY -m nav.route index/demo "..." --json              # 机器可读
 ```
+
+> `--out` 建议放在项目的 `index/` 下（CLI 单语料用 `index/demo`，UI 注册的语料用
+> `index/corpora/<id>`）。这样**所有索引集中在一处**，源目录保持只读 —— 见
+> `index/README.md`。
 
 步骤 2/3 是**增量**的：文件大小与 mtime 未变且已有对应摘要时直接跳过。
 内容变了才会重建该文件的章节树（其旧章节摘要随之失效）。
@@ -39,8 +43,10 @@ $PY -m nav.route index/ "..." --json              # 机器可读
 
 ## 索引结构
 
+单个语料的索引目录（`index/demo` 或 `index/corpora/<id>`）内部：
+
 ```
-index/
+<index-dir>/
 ├── manifest.json         目录树 + 文件元数据 + 摘要   ← 小，常驻内存
 └── trees/<key>.json      每份文档的章节树             ← 大，按需加载
 ```
@@ -143,7 +149,7 @@ index/
 ```python
 from nav.registry import Registry
 
-reg = Registry()                                  # 状态存 results/corpora.json
+reg = Registry()                     # 索引集中存 index/（见 index/README.md）
 c = reg.add("/data/reports", name="年报库")        # 每个语料一个独立索引目录
 reg.index_async(c.id)                             # 后台建索引，状态可轮询
 reg.start_watcher(interval=30)                    # 轮询文件变化并自动增量重建
@@ -171,7 +177,8 @@ context, sources = build_context(res, nav)        # 按相关性截断，预算�
 | **增量重建** | `scan(previous=...)` 跳过 size+mtime 未变的文件，**不重新抽取**。否则 watcher 每次轮询都会把每个 PDF 重发给 Azure DI |
 | **只补缺失的摘要** | 有描述的跳过，所以改一个文件只花一个文件的摘要钱 |
 | **沿用语料自身设置** | 注册时关掉文件描述，watcher 就不会偷偷开始调 LLM |
-| **拒绝项目内目录** | 否则会递归进 `results/`，边写索引边读自己 |
+| **拒绝项目内目录** | 否则会递归进 `index/`，边写索引边读自己 |
+| **索引与源文件分离** | 注册 `/data/reports` 只往 `index/corpora/<id>/` 写，源目录只读 |
 | **目录消失 → error** | 带可读错误信息，而不是静默返回空结果 |
 
 ## 已知限制

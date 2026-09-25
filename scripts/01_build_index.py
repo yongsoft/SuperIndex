@@ -19,7 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data" / "aia_reports"
-OUT_DIR = ROOT / "results"
+# Central index store — see index/README.md
+OUT_DIR = ROOT / "index" / "trees"
 
 
 def count_nodes(structure: list) -> tuple[int, int]:

@@ -262,6 +262,28 @@ The UI is a thin client over six endpoints, so anything it does is scriptable:
 | `POST /api/corpora/<id>/reindex` | `{deep_index?, force?}` |
 | `POST /api/ask` | `{question, corpus_ids?}` → SSE: `stage`, `nav`, `sources`, `answer`, `done` |
 
+### Where the indexes live
+
+**All index data goes to one place in the project — `index/` — while the source
+files stay exactly where they are.**
+
+```
+index/
+├── registry.json            registered corpora: source path, status, stats
+├── corpora/<id>/            one index per registered directory
+│   ├── manifest.json          directory tree + per-file descriptions
+│   └── trees/<key>.json       chapter tree per document
+├── pageindex/               PageIndex doc store
+└── trees/                   PageIndex offline flash trees
+```
+
+Registering `/data/reports` writes **only** to `index/corpora/<id>/`; the source
+directory is never written to. The registry stores the source's **absolute
+path**, so indexes and sources can move independently. Deleting `index/` loses
+nothing — every corpus rebuilds from its source. See
+[`index/README.md`](index/README.md), or set `SUPERINDEX_INDEX_DIR` to put the
+whole store on a bigger volume.
+
 ### How indexing and watching work
 
 - Each corpus gets **its own index directory**, so one failing corpus cannot
@@ -276,7 +298,7 @@ The UI is a thin client over six endpoints, so anything it does is scriptable:
 - If a registered directory disappears, the corpus is marked `error` with a
   readable message instead of silently returning nothing.
 - Registering a directory **inside the project** is refused — it would recurse
-  into `results/` while that same index is being written.
+  into `index/` while that same index is being written.
 
 ---
 

@@ -11,8 +11,9 @@ Each corpus gets its **own index directory**, so indexing one cannot corrupt
 another and a failure is contained. Querying several at once merges their
 manifests into one routing view — see `nav.route.MultiNavigator`.
 
-State lives in a JSON file (default `results/corpora.json`), which is build
-output and therefore gitignored.
+State lives in `index/registry.json` and each corpus's index in
+`index/corpora/<id>/` — one central store, separate from the source files it
+describes. Override the location with `SUPERINDEX_INDEX_DIR`.
 """
 from __future__ import annotations
 
@@ -38,6 +39,15 @@ from nav.store import Manifest  # noqa: E402
 DEFAULT_INCLUDES = {".md", ".markdown", ".txt", ".pdf"}
 DEFAULT_EXCLUDES = {".git", "node_modules", "__pycache__", ".venv", "venv",
                     ".idea", ".vscode", "dist", "build"}
+
+# Every index this project writes lives under one root, so registering a corpus
+# never writes into the directory being indexed. Point SUPERINDEX_INDEX_DIR at
+# a bigger or shared volume to move the whole store elsewhere.
+INDEX_ROOT = Path(os.getenv("SUPERINDEX_INDEX_DIR") or (ROOT / "index"))
+REGISTRY_FILE = INDEX_ROOT / "registry.json"
+CORPORA_ROOT = INDEX_ROOT / "corpora"
+PAGEINDEX_STORE = INDEX_ROOT / "pageindex"
+TREES_ROOT = INDEX_ROOT / "trees"
 
 STATUS_PENDING = "pending"
 STATUS_INDEXING = "indexing"
@@ -95,12 +105,13 @@ class Corpus:
 class Registry:
     """Manage registered corpora, their indexes, and the change watcher."""
 
-    def __init__(self, state_file: "str | Path" = ROOT / "results" / "corpora.json",
-                 index_root: "str | Path" = ROOT / "results" / "corpus_index",
+    def __init__(self, state_file: "str | Path | None" = None,
+                 index_root: "str | Path | None" = None,
                  *, model: str = "", workers: int = 6,
                  extractor: str = "auto"):
-        self.state_file = Path(state_file)
-        self.index_root = Path(index_root)
+        # Defaults come from INDEX_ROOT, so the whole store moves as one unit.
+        self.state_file = Path(state_file or REGISTRY_FILE)
+        self.index_root = Path(index_root or CORPORA_ROOT)
         self.model = model
         self.workers = workers
         self.extractor = extractor
@@ -170,7 +181,7 @@ class Registry:
             raise ValueError(f"not a directory: {p}")
         p = p.resolve()
         if p == ROOT or ROOT in p.parents:
-            # Indexing our own tree would pull in PageIndex/, .venv/, results/
+            # Indexing our own tree would pull in PageIndex/, .venv/ and index/
             # and recurse into whatever index it is building.
             raise ValueError("cannot register a directory inside the project")
         existing = self.find_by_path(p)
