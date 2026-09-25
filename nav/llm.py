@@ -203,3 +203,59 @@ def chat_stream_text(prompt: str, model: str = DEFAULT_MODEL,
     if not got:
         yield chat(prompt, model=model, effort=effort,
                    max_tokens=min(max_tokens * 2, MAX_TOKEN_CEILING))
+
+
+def chat_stream_events(prompt: str, model: str = DEFAULT_MODEL,
+                       effort: str = DEFAULT_EFFORT, max_tokens: int = 2048):
+    """Stream **both** the model's thinking and its answer, tagged by kind.
+
+    Yields `("reasoning", text)` and `("content", text)` pairs. The reasoning is
+    the model's private scratchpad — a reasoning model emits it in a separate
+    `reasoning_content` field, and on our own probe of `deepseek-flash` it was
+    **240 of 269 chunks, against 27 chunks of answer**. Those tokens are
+    generated whether or not anyone reads them, so discarding them buys nothing
+    and costs the one thing a slow answer cannot spare: evidence that something
+    is happening. Forwarding them moves the first visible sign of life from the
+    first *answer* token to the first *thinking* token — 0.4s instead of ~2s on
+    a small prompt, and far wider apart on a real 20K-character one.
+
+    Callers that only want the answer keep using `chat_stream_text()`; this
+    function exists so the UI can show the difference.
+
+    The fallback mirrors `chat_stream_text`: if no **content** ever arrives (an
+    exhausted budget can return an empty stream rather than an error), retry
+    non-streaming with twice the room. Reasoning alone does not count as
+    arrival — a turn that only thinks and never answers would otherwise stream
+    a long silence and then stop with an empty reply.
+    """
+    litellm = _litellm()
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "stream": True}
+    if effort:
+        kwargs["reasoning_effort"] = effort
+    got_content = False
+    try:
+        resp = litellm.completion(model=model,
+                                  messages=[{"role": "user", "content": prompt}],
+                                  **kwargs)
+        for chunk in resp:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            # `reasoning_content` is the field DeepSeek-family models use; some
+            # providers put it under `reasoning`. Read both, prefer the former.
+            thinking = (getattr(delta, "reasoning_content", None)
+                        or getattr(delta, "reasoning", None))
+            if thinking:
+                yield ("reasoning", thinking)
+            content = getattr(delta, "content", None)
+            if content:
+                got_content = True
+                yield ("content", content)
+    except Exception:  # noqa: BLE001 - provider may not stream; fall through
+        if got_content:
+            raise
+    if not got_content:
+        yield ("content", chat(prompt, model=model, effort=effort,
+                               max_tokens=min(max_tokens * 2,
+                                              MAX_TOKEN_CEILING)))

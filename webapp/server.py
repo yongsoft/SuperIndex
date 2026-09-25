@@ -19,7 +19,12 @@ Registered directories are indexed in the background; once a corpus is `ready`
 it is automatically in scope for questions, unless the caller names a subset.
 
 The ask stream carries the navigation trace — which directories, files and
-sections the model chose — so an answer can be audited rather than trusted.
+sections the model chose — so an answer can be audited rather than trusted. It
+also carries the model's *thinking* (`thinking` events) separately from its
+answer (`answer` events), because a reasoning model produces far more of the
+former than the latter and showing it is what keeps a slow answer from looking
+like a hung one. Closing the connection mid-answer is treated as a cancel, not
+an error.
 
 Usage:
     python webapp/server.py                      # http://127.0.0.1:8787
@@ -65,6 +70,15 @@ ANSWER_MAX_TOKENS = int(os.getenv("SUPERINDEX_ANSWER_MAX_TOKENS", "4096"))
 _registry: Registry | None = None
 _registry_lock = threading.Lock()
 _ask_lock = threading.Lock()          # one answer at a time, for readable traces
+
+
+class ClientGone(Exception):
+    """The SSE reader hung up — a Stop click or a closed tab.
+
+    Kept distinct from a real failure so `_ask` can record it as an abort
+    rather than an error. Conflating the two used to write a bogus `fail`
+    record alongside the query's own `finish` record, sharing one id.
+    """
 
 
 def registry() -> Registry:
@@ -316,10 +330,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
         def emit(event: str, data):
-            self.wfile.write(
-                f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-                .encode("utf-8"))
-            self.wfile.flush()
+            """Write one SSE frame. Raises ClientGone if the reader hung up.
+
+            The user closing the tab or pressing Stop must not be reported as a
+            failure — see the `ClientGone` handler below.
+            """
+            try:
+                self.wfile.write(
+                    f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    .encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                raise ClientGone() from exc
 
         started = time.time()
         trace = QueryTrace(question,
@@ -357,8 +379,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Level 2: which sections.
                 trace.mark("sections")
-                for fe in res.files:
-                    secs, t2 = nav.find_sections(question, fe, top_n=6)
+                for fe, (secs, t2) in zip(res.files, nav.sections_for_all(
+                        question, res.files, 6)):
                     for st in t2:
                         emit("nav", {"level": "chapter", "where": st.where,
                                      "detail": st.detail, "picked": st.picked,
@@ -382,16 +404,36 @@ class Handler(BaseHTTPRequestHandler):
                 emit("stage", {"text": f"生成回答（{len(sources)} 个来源）"})
                 trace.mark("answer")
                 answer = ""
-                for delta in llm.chat_stream_text(
+                thinking_chars = 0
+                # `chat_stream_events` carries the model's reasoning alongside
+                # its answer. The reasoning is generated either way; forwarding
+                # it is what turns a silent 18-second wait into visible work.
+                for kind, delta in llm.chat_stream_events(
                         answer_prompt(question, context),
                         effort=REASONING_EFFORT,
                         max_tokens=ANSWER_MAX_TOKENS):
-                    answer += delta
-                    emit("answer", {"delta": delta})
+                    if kind == "reasoning":
+                        thinking_chars += len(delta)
+                        emit("thinking", {"delta": delta})
+                    else:
+                        answer += delta
+                        emit("answer", {"delta": delta})
                 trace.stage_ms("answer", trace.elapsed("answer"))
-                trace.finish(answer, context_chars=len(context))
+                # thinking_chars answers "why was this slow?" after the fact:
+                # a large value means the model was thinking, not that retrieval
+                # or the context was expensive.
+                trace.finish(answer, context_chars=len(context),
+                             thinking_chars=thinking_chars)
 
             emit("done", {"ok": True, "ms": int((time.time() - started) * 1000)})
+        except ClientGone:
+            # The reader pressed Stop or closed the tab. Not an error: the
+            # answer was simply not wanted any more. Recording it as a failure
+            # used to leave a bogus `fail` record next to the real one sharing
+            # this id, which made the error log look worse than the app is.
+            trace.abort("client disconnected")
+            # The generator above is now unreferenced; dropping it closes the
+            # provider's stream, so the request stops rather than running on.
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             # One record in queries.jsonl (ok=false) plus one in errors.jsonl,

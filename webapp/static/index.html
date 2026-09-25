@@ -118,12 +118,24 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
   padding:11px 16px;display:inline-block;max-width:100%;white-space:pre-wrap;font-size:15px;
 }
 .msg.bot .bubble{white-space:pre-wrap;word-wrap:break-word;font-size:15px;line-height:1.75}
+/* 思考过程：检索路径框里的一个分区。等宽小字、灰、可滚动 ——
+   它是过程，答案才是结果。 */
+.think{border-top:1px dashed var(--ink-100)}
+.think[hidden]{display:none}
+.think-hd{font-size:12px;color:var(--ink-400);font-weight:600;letter-spacing:.3px;padding:9px 14px 4px}
+.think-body{
+  font-family:var(--mono);font-size:12.5px;color:var(--ink-400);line-height:1.7;
+  padding:0 14px 12px;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;
+}
 .trace{border:1px solid var(--ink-100);border-radius:var(--r);margin:0 0 14px;overflow:hidden;background:var(--surface)}
 .trace summary{
   cursor:pointer;font-size:13px;color:var(--ink-600);padding:10px 14px;user-select:none;
   display:flex;align-items:center;gap:9px;background:var(--ink-50);font-weight:600;
 }
 .trace summary::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--red);flex:none}
+/* 还在跑的时候让圆点脉动，一眼看出没卡住 */
+.trace.live summary::before{animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
 .steps{padding:8px 14px 12px}
 .step{font-size:13px;color:var(--ink-600);font-family:var(--mono);padding:4px 0;line-height:1.65}
 .step b{color:var(--ink);font-weight:600}
@@ -157,6 +169,8 @@ textarea::placeholder{color:var(--ink-300)}
 .btn:hover{background:var(--ink-50);border-color:var(--ink-300)}
 .btn.pri{background:var(--red);border-color:var(--red);color:#fff}
 .btn.pri:hover{background:var(--red-600);border-color:var(--red-600)}
+.btn.stop{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.stop:hover{background:var(--ink-800);border-color:var(--ink-800)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.sm{font-size:12.5px;padding:5px 11px;border-radius:8px}
 
@@ -178,6 +192,7 @@ label.chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink
 #alias{font:inherit;font-size:13px;padding:7px 11px;border-radius:9px;border:1px solid var(--ink-200);background:var(--surface);color:var(--ink);width:160px}
 #alias:focus{outline:none;border-color:var(--red)}
 .err{color:var(--err);font-size:13px;margin-top:8px}
+.stopped{color:var(--ink-400);font-size:13px;margin-top:8px}
 /* 历史问题下拉 — 聚焦输入框时弹出，点击填入 */
 .q-wrap{position:relative;flex:1;display:flex;min-width:0}
 .q-dropdown{
@@ -274,6 +289,18 @@ let S = {corpora:[]};
 const OPEN = new Set();          // corpus ids with the tree expanded
 const TREE = {};                 // cached trees
 let CUR = null;
+let BUSY = false;                // a question is streaming right now
+let ABORT = null;                // AbortController for it — the Stop button
+
+// While streaming the Send button becomes Stop. A model that spirals can run
+// for minutes; without an exit the only option is to reload the page.
+function setBusy(on){
+  BUSY = on;
+  const b = $('#send');
+  b.textContent = on ? '停止' : 'Send';
+  b.classList.toggle('stop', on);
+  b.disabled = false;            // must stay clickable — that is the whole point
+}
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const md = s => esc(s)
@@ -411,11 +438,16 @@ $('#list').addEventListener('change', e => { if (e.target.dataset.sel) renderSco
 function renderScope(){
   const sel = [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
   const ready = S.corpora.filter(c => c.ready);
-  if (!ready.length){ $('#scope').textContent = 'No indexed corpora yet'; $('#send').disabled = true; renderSuggestions(); return; }
+  if (!ready.length){
+    $('#scope').textContent = 'No indexed corpora yet';
+    // 别在问答进行中把「停止」按钮禁用掉 —— 那会让用户卡在无法中断的请求里。
+    if (!BUSY) $('#send').disabled = true;
+    renderSuggestions(); return;
+  }
   $('#scope').textContent = sel.length
     ? `Scope: ${sel.map(id => (S.corpora.find(c=>c.id===id)||{}).name||id).join(', ')}  (${sel.length}/${ready.length})`
     : `Scope: all ${ready.length} indexed corpora`;
-  $('#send').disabled = false;
+  if (!BUSY) $('#send').disabled = false;
   renderSuggestions();
 }
 const picked = () => [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
@@ -514,20 +546,50 @@ function addMsg(cls, html){
   $('#chat').appendChild(d); $('#chat').scrollTop = $('#chat').scrollHeight; return d;
 }
 async function ask(){
+  if (BUSY) return;                       // 一次只跑一个；进行中请按「停止」
   const q = $('#q').value.trim();
   if (!q) return;
   $('#q').value = ''; $('#q').style.height = 'auto';
   $('#chat').querySelector('.empty')?.remove();
   addMsg('user', `<div class="who">You</div><div class="bubble">${esc(q)}</div>`);
   const bot = addMsg('bot', `<div class="who">SuperIndex</div>
-    <details class="trace" open><summary>Retrieval path</summary><div class="steps"></div></details>
+    <details class="trace" open>
+      <summary><span class="sum">Retrieval path</span></summary>
+      <div class="steps"></div>
+      <div class="think" hidden>
+        <div class="think-hd">思考过程</div>
+        <div class="think-body"></div>
+      </div>
+    </details>
     <div class="stage">Starting…</div><div class="bubble"></div><div class="srcs"></div>`);
-  const steps = bot.querySelector('.steps'), stg = bot.querySelector('.stage'),
-        bub = bot.querySelector('.bubble'), srcs = bot.querySelector('.srcs');
-  $('#send').disabled = true;
+  const trace = bot.querySelector('.trace'), sum = bot.querySelector('.trace .sum'),
+        steps = bot.querySelector('.steps'), stg = bot.querySelector('.stage'),
+        bub = bot.querySelector('.bubble'), srcs = bot.querySelector('.srcs'),
+        think = bot.querySelector('.think'), thinkBody = bot.querySelector('.think-body'),
+        thinkHd = bot.querySelector('.think-hd');
+  // 检索路径和思考过程放在同一个框里 —— 它们是同一次「模型怎么找到并想出答案」
+  // 的前后两段，分成两个折叠框只是在逼用户开两次。
+  // 思考区默认隐藏，收到第一个 thinking 事件才出现，不留空壳。
+  let thinkChars = 0, answered = false, thinkText = '', thinkRaf = 0;
+  const showThinking = () => { think.hidden = false; trace.classList.add('live'); };
+  // 思考可以长到几千字；每帧写一次 DOM，避免每个 chunk 都触发一次回流。
+  const flushThink = () => {
+    thinkRaf = 0;
+    thinkBody.textContent = thinkText;
+    thinkBody.scrollTop = thinkBody.scrollHeight;
+    thinkHd.textContent = `思考过程 · ${thinkChars} 字`;
+  };
+  // 收起时 summary 上留下这一轮的总结：看过什么 + 想了多少。
+  const settleThink = () => {
+    trace.classList.remove('live');
+    sum.textContent = thinkChars ? `检索过程 · 思考 ${thinkChars} 字` : '检索过程';
+  };
+
+  setBusy(true);
+  ABORT = new AbortController();
   try{
     const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({question:q, corpus_ids: picked()})});
+      body: JSON.stringify({question:q, corpus_ids: picked()}), signal: ABORT.signal});
     if (!r.ok){ const e = await r.json(); throw new Error(e.error || r.statusText); }
     const rd = r.body.getReader(), dec = new TextDecoder();
     let buf = '', acc = '';
@@ -549,16 +611,33 @@ async function ask(){
            <br>→ <b>${esc((d.picked||[]).map(pretty).join('、'))}</b>${d.note?` <span class="fb">(${esc(d.note)})</span>`:''}</div>`);
         else if (ev === 'sources') srcs.innerHTML = (d||[]).map(s =>
           `<div>${esc(s.display || pretty(s.file))} · ${esc(s.title)} (${s.start}-${s.end})</div>`).join('') || '';
-        else if (ev === 'answer'){ stg.textContent=''; acc += d.delta; bub.innerHTML = md(acc); }
+        else if (ev === 'thinking'){
+          if (think.hidden) showThinking();
+          thinkText += d.delta; thinkChars = thinkText.length;
+          if (!thinkRaf) thinkRaf = requestAnimationFrame(flushThink);
+        }
+        else if (ev === 'answer'){
+          stg.textContent='';
+          if (!answered){          // 答案开始 → 收起整个过程框，把版面让给结果
+            answered = true;
+            settleThink();
+            trace.open = false;
+          }
+          acc += d.delta; bub.innerHTML = md(acc);
+        }
         else if (ev === 'error'){ stg.textContent=''; bub.innerHTML += `<div class="err">${esc(d.message)}</div>`; }
-        else if (ev === 'done'){ stg.textContent = d.ok ? `Done · ${d.ms} ms` : 'Incomplete'; }
+        else if (ev === 'done'){ stg.textContent = d.ok ? `Done · ${d.ms} ms` : 'Incomplete'; settleThink(); }
       }
       $('#chat').scrollTop = $('#chat').scrollHeight;
     }
-  }catch(e){ stg.textContent=''; bub.innerHTML += `<div class="err">${esc(e.message)}</div>`; }
-  $('#send').disabled = false;
+  }catch(e){
+    stg.textContent=''; settleThink();
+    if (e.name === 'AbortError') bub.insertAdjacentHTML('beforeend', '<div class="stopped">已停止</div>');
+    else bub.innerHTML += `<div class="err">${esc(e.message)}</div>`;
+  }
+  setBusy(false);
 }
-$('#send').onclick = ask;
+$('#send').onclick = () => { if (BUSY) ABORT?.abort(); else ask(); };
 $('#q').addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); ask(); } });
 $('#q').addEventListener('input', e => {
   e.target.style.height='auto'; e.target.style.height = Math.min(e.target.scrollHeight,170)+'px';

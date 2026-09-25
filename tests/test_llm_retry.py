@@ -165,6 +165,111 @@ def test_stream_fallback_gets_more_room() -> None:
               str([c["max_tokens"] for c in stub.calls]))
 
 
+# ── streaming events: reasoning vs content ───────────────────────────────
+class _Delta:
+    """A streamed delta. Reasoning models put thinking in a separate field."""
+
+    def __init__(self, content=None, reasoning=None, alias=None):
+        self.content = content
+        self.reasoning_content = reasoning
+        if alias is not None:
+            self.reasoning = alias
+
+
+class _StreamChunk:
+    def __init__(self, delta):
+        self.choices = [type("_C", (), {"delta": delta})()]
+
+
+class StreamStub:
+    """completion() returns an iterable of chunks when `stream` is set.
+
+    `chunks` is a list of (content, reasoning) pairs — either may be None, which
+    is what the provider does: most chunks carry only thinking.
+    """
+
+    suppress_debug_info = True
+
+    def __init__(self, chunks, fallback=None):
+        self.chunks = list(chunks)
+        self.fallback = fallback
+        self.calls: list[dict] = []
+
+    def completion(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if kwargs.get("stream"):
+            return [_StreamChunk(_Delta(c, r)) for c, r in self.chunks]
+        return self.fallback if self.fallback is not None else _Resp("", "length")
+
+
+@contextlib.contextmanager
+def stream_stubbed(chunks, fallback=None):
+    stub = StreamStub(chunks, fallback)
+    real = llm._litellm
+    llm._litellm = lambda: stub              # type: ignore[assignment]
+    try:
+        yield stub
+    finally:
+        llm._litellm = real                  # type: ignore[assignment]
+
+
+def test_stream_events_split_reasoning_from_content() -> None:
+    print("\n[流式事件把「思考」和「正文」分开，且顺序不乱]")
+    # 真实形态：多数 chunk 只有思考，正文零星夹在中间。
+    with stream_stubbed([(None, "想1"), ("答1", "想2"), ("答2", None)]) as stub:
+        events = list(llm.chat_stream_events("p", effort="low", max_tokens=1000))
+        check("事件顺序正确",
+              events == [("reasoning", "想1"), ("reasoning", "想2"),
+                         ("content", "答1"), ("content", "答2")],
+              str(events))
+        check("只调用一次（没有多余回退）", len(stub.calls) == 1, str(len(stub.calls)))
+
+
+def test_stream_events_reasoning_alias() -> None:
+    print("\n[部分厂商把思考放在 reasoning 字段 → 同样转发]")
+    # StreamStub builds chunks from (content, reasoning) pairs; override the
+    # completion so the `reasoning` alias field can be exercised directly.
+    stub = StreamStub([])
+    stub.completion = lambda **kw: [          # type: ignore[assignment]
+        _StreamChunk(_Delta(alias="别名字段的思考")),
+        _StreamChunk(_Delta(content="正文")),
+    ]
+    real = llm._litellm
+    llm._litellm = lambda: stub              # type: ignore[assignment]
+    try:
+        events = list(llm.chat_stream_events("p", max_tokens=100))
+        check("reasoning 别名被识别",
+              ("reasoning", "别名字段的思考") in events, str(events))
+        check("正文照常输出", ("content", "正文") in events, str(events))
+    finally:
+        llm._litellm = real                  # type: ignore[assignment]
+
+
+def test_stream_events_falls_back_when_only_reasoning() -> None:
+    print("\n[只有思考没有正文 → 视为没到，回退且预算翻倍]")
+    # A turn that thinks and never answers must not stream a long silence and
+    # then stop empty. Reasoning alone is not arrival.
+    with stream_stubbed([(None, "想了很久"), (None, "还在想")],
+                        fallback=reply("回退后的答案")) as stub:
+        events = list(llm.chat_stream_events("p", effort="low", max_tokens=1000))
+        kinds = [k for k, _ in events]
+        check("思考被转发", ("reasoning", "想了很久") in events, str(events[:2]))
+        check("回退的正文也带上了", ("content", "回退后的答案") in events, str(events))
+        check("回退时预算翻倍",
+              stub.calls[-1]["max_tokens"] == 2000,
+              str([c.get("max_tokens") for c in stub.calls]))
+        check("回退调用是非流式的", "stream" not in stub.calls[-1],
+              str(stub.calls[-1].keys()))
+
+
+def test_stream_text_still_yields_plain_strings() -> None:
+    print("\n[chat_stream_text 语义不变 —— 仍产出纯字符串]")
+    with stream_stubbed([(None, "想"), ("答", None)]):
+        out = list(llm.chat_stream_text("p", max_tokens=100))
+        check("全是字符串，不含思考", all(isinstance(x, str) for x in out), str(out))
+        check("内容只有正文", "".join(out) == "答", str(out))
+
+
 def test_json_bare_identifiers() -> None:
     print("\n[模型回显标签前缀 → JSON 修复]")
     from nav.llm import extract_json
@@ -211,6 +316,10 @@ def main() -> int:
     test_exhausted_raises_with_detail()
     test_transport_error_retries_unchanged()
     test_stream_fallback_gets_more_room()
+    test_stream_events_split_reasoning_from_content()
+    test_stream_events_reasoning_alias()
+    test_stream_events_falls_back_when_only_reasoning()
+    test_stream_text_still_yields_plain_strings()
     test_json_bare_identifiers()
     test_ints_tolerates_prefixes()
     print()

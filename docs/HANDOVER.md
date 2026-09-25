@@ -209,9 +209,9 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── test_azure_di.py       azure_di 的离线测试（28 断言，不联网）
 │   ├── test_backend.py        后端解析的离线测试（25 断言，不联网）
 │   ├── test_registry.py       语料注册表/watcher 的离线测试（135 断言，不联网）
-│   ├── test_llm_retry.py      LLM 预算升级与流式回退（39 断言，stub 掉 litellm）
-│   ├── test_debuglog.py       日志记录/过滤/轮转（40 断言，写临时目录）
-│   ├── test_policy.py         路由策略（128 断言，stub 掉 LLM，只写临时目录）
+│   ├── test_llm_retry.py      LLM 预算升级与流式回退（49 断言，stub 掉 litellm）
+│   ├── test_debuglog.py       日志记录/过滤/轮转（44 断言，写临时目录）
+│   ├── test_policy.py         路由策略（132 断言，stub 掉 LLM，只写临时目录）
 │   └── test_suggest.py        示例问题生成/缓存（75 断言，stub 掉 LLM，只写临时目录）
 │
 ├── config/                    ★ 业务配置（唯一需要业务方改的地方）
@@ -318,7 +318,23 @@ API 一览（全部可脚本化）：
 | `PATCH /api/corpora/<id>` | 改名 |
 | `DELETE /api/corpora/<id>` | 移除并删除索引 |
 | `POST /api/corpora/<id>/reindex` | 强制重建（`force` / `deep_index`） |
-| `POST /api/ask` | SSE：`stage` / `nav` / `sources` / `answer` / `done` |
+| `POST /api/ask` | SSE：`policy` / `stage` / `nav` / `sources` / **`thinking`** / `answer` / `error` / `done` |
+
+`thinking` 与 `answer` 分开两个事件：推理模型绝大部分输出是思考
+（实测 `deepseek-flash` 269 个 chunk 里 240 个是 `reasoning_content`、只有 27 个是正文），
+丢掉它只会让用户对着空白等。
+
+**前端把检索路径和思考过程放在同一个框里**（`.trace` 内：`.steps` → 虚线 → `.think` 分区）。
+它们是同一次「模型怎么找到、又想出了什么」的前后两段，拆成两个折叠框只是逼用户开两次。
+思考区默认 `hidden`，首个 `thinking` 事件才显示；首个 `answer` 事件时**整框自动收起**，
+summary 留下总结句 `检索过程 · 思考 N 字`。`.trace.live` 让 summary 的红点脉动，表示还在跑。
+
+**取消语义**：客户端中途断开（关标签页 / 点「停止」）**不算错误** ——
+`emit()` 写失败抛 `ClientGone`，`_ask` 捕获后走 `trace.abort("client disconnected")`，
+只写 `queries.jsonl` 一条，不写 `errors.jsonl`。
+（此前断开会被当成异常落到 `trace.fail()`，于是同一次查询在日志里留下
+`finish` 和 `fail` 两条同 id 记录，把错误日志撑得比实际难看。）
+断开后 litellm 的流随生成器回收而关闭，请求随之停止。
 
 ```python
 REASONING_EFFORT = os.getenv("PAGEINDEX_REASONING_EFFORT", "low").strip() or None
@@ -790,13 +806,13 @@ $PY -u scripts/02_qa_test.py --skip-index --questions questions_3docs.json \
 # 4. 验证 nav 索引可用（应定位到 友邦保险/2024/annual/ + 股息章节）
 $PY -u -m nav.route samples/test_index "友邦保险 2024 年全年的每股股息是多少？"
 
-# 5. 跑离线测试（470 条断言，不联网，约 30 秒）
+# 5. 跑离线测试（488 条断言，不联网，约 30 秒）
 $PY -u tests/test_azure_di.py     # 28 条：配置/页标记/错误映射
 $PY -u tests/test_backend.py      # 25 条：后端解析/按页切分/PageIndex 接管
 $PY -u tests/test_registry.py     # 135 条：注册表/变更检测/watcher/投放区
-$PY -u tests/test_llm_retry.py    # 39 条：token 预算升级/流式回退
-$PY -u tests/test_debuglog.py     # 40 条：日志记录/过滤/轮转
-$PY -u tests/test_policy.py       # 128 条：路由策略（含「空策略 = 原行为」）
+$PY -u tests/test_llm_retry.py    # 49 条：token 预算升级/流式回退/思考与正文分流
+$PY -u tests/test_debuglog.py     # 44 条：日志记录/过滤/轮转/思考量字段
+$PY -u tests/test_policy.py       # 132 条：路由策略（含「空策略 = 原行为」、并行顺序一致）
 $PY -u tests/test_suggest.py      # 75 条：示例问题生成/缓存/失效
 #   注：下载样例 PDF 后 test_backend 会多 2 条（27 条）
 

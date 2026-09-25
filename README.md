@@ -104,6 +104,26 @@ Structural indexing needs **no LLM and no API key**.
 You can index an entire corpus, inspect the structure, and decide whether it is
 worth summarising — before paying for anything.
 
+### Where the time goes on a question
+
+Measured over 21 recorded queries (`results/logs/queries.jsonl`):
+
+| Stage | Mean | Max | Share |
+|---|---|---|---|
+| **answer generation** | **17.9 s** | 93.3 s | **77%** |
+| routing — pick directories, then files (2 calls) | 4.2 s | 12.7 s | 18% |
+| section selection — one call per candidate file | 1.2 s | 2.8 s | 5% |
+| **end to end** | **23.3 s** | 114.0 s | — |
+
+The dominant cost is not retrieval and not the context: the slowest query on
+record spent **93 s answering from a 3 KB context**. It is the model's thinking.
+`reasoning_effort` is not a usable brake here — turning it off entirely moved
+thinking from 804 to 722 characters on the same prompt. So the lever that
+matters is showing the work rather than trying to shorten it, which is what the
+collapsible thinking panel does. Section selection is the one stage that was
+purely wasteful: the per-file calls are independent, so they now run
+concurrently (4 files × 0.25 s measured at 0.26 s, not 1.0 s).
+
 ### Better text in, better answers out
 
 Upstream reads the PDF text layer with PyPDF2. On table-heavy documents that
@@ -181,6 +201,18 @@ frontend framework, just a stdlib HTTP server and one HTML file.
 - **Answers stay auditable.** The chat shows the navigation trace — which
   directories, files and sections the model chose, and which fallback fired if
   it hesitated — alongside the streamed answer and its sources.
+- **You can see it thinking, and you can stop it.** Reasoning models spend most
+  of their wall clock on tokens nobody asked for: on our own measurement of
+  `deepseek-flash`, **240 of 269 streamed chunks were thinking and 27 were
+  answer**. Those tokens are generated either way, so the UI forwards them
+  instead of discarding them. Retrieval path and reasoning share **one** box,
+  because they are two halves of the same story — where the model looked, then
+  what it made of it — and two separate disclosures just make you open the same
+  thing twice. It starts filling within the first second and folds away the
+  moment the answer begins, leaving `检索过程 · 思考 498 字` behind as the
+  summary. When a model spirals — the slowest query we recorded took **114 s**
+  on a 3 KB context — Send becomes **Stop**, and a cancelled query is logged as
+  a cancel rather than an error.
 
 ```bash
 python webapp/server.py          # http://127.0.0.1:8787
@@ -199,7 +231,7 @@ Retrieval quality problems are usually measurable before they are fixable:
 
 ### Tested offline
 
-**470 assertions** across the extraction, navigation, registry, LLM-retry,
+**488 assertions** across the extraction, navigation, registry, LLM-retry,
 logging, policy and suggestion layers, with no network and no credentials
 required:
 
@@ -207,9 +239,9 @@ required:
 python tests/test_azure_di.py    # 28 assertions — config, page markers, error mapping
 python tests/test_backend.py     # 25 assertions — backend resolution, page splitting
 python tests/test_registry.py    # 135 assertions — registry, change detection, watcher, drop zone
-python tests/test_llm_retry.py   # 39 assertions — token-budget escalation, stream fallback
-python tests/test_debuglog.py    # 40 assertions — query/error records, rotation, filters
-python tests/test_policy.py      # 128 assertions — routing policy, incl. "empty = no-op"
+python tests/test_llm_retry.py   # 49 assertions — token-budget escalation, stream fallback, thinking/content split
+python tests/test_debuglog.py    # 44 assertions — query/error records, rotation, filters
+python tests/test_policy.py      # 132 assertions — routing policy, incl. "empty = no-op", parallel section order
 python tests/test_suggest.py     # 75 assertions — example-question generation and caching
 ```
 

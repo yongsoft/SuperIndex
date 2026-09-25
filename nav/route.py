@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -574,11 +575,34 @@ class Navigator:
         if not res.files:
             res.notes.append("未定位到任何文件")
             return res
-        for fe in res.files:
-            secs, t2 = self.find_sections(question, fe, top_n=max_sections)
+        # One section call per file, and they are independent: each reads its
+        # own tree file and asks the model a self-contained question. Serially
+        # that is N round trips stacked end to end; in parallel it is one.
+        # `map` (not `as_completed`) because the ORDER is load-bearing —
+        # build_context truncates in relevance order, so a reshuffle would let a
+        # marginal section crowd out the best one.
+        #
+        # Safe to thread: _load_tree() only reads a JSON file (store.py:148),
+        # self.policy is frozen, and self.m is read-only after load.
+        for fe, (secs, t2) in zip(res.files, self.sections_for_all(
+                question, res.files, max_sections)):
             res.trace += t2
             res.sections += [(fe, s) for s in secs]
         return res
+
+    def sections_for_all(self, question: str, files: list,
+                         max_sections: int) -> list[tuple[list, list[Step]]]:
+        """`find_sections` for every file, in order, concurrently.
+
+        A single file skips the pool entirely — the overhead of a thread would
+        exceed the work, and this is the common case on small corpora.
+        """
+        if len(files) == 1:
+            return [self.find_sections(question, files[0], top_n=max_sections)]
+        with ThreadPoolExecutor(max_workers=min(len(files), 4)) as pool:
+            return list(pool.map(
+                lambda fe: self.find_sections(question, fe, top_n=max_sections),
+                files))
 
 
 def merge_manifests(corpora: list[tuple[str, "str | Path", str, str]]

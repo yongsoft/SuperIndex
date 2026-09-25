@@ -199,6 +199,36 @@ SUPERINDEX_ROUTING_POLICY=/path/x.yaml $PY -m nav.route ...   # 换文件位置
 - 完整目录树 listing 8.9K 字符
 - 全树路径与逐层下钻路径都能正确定位到 `公司07/2023/interim/公司07_2023_interim.md`
 
+## 延迟：思考必须转发，不能丢
+
+一次问答的耗时分布（21 条真实记录统计）：**答案生成 17.9s（77%）**、
+路由 4.2s、章节选择 1.2s，端到端平均 23.3s、最慢 114s。
+
+瓶颈不在检索也不在上下文 —— 最慢那次只用了 3176 字符的上下文，却花了 93 秒。
+瓶颈是**模型的思考**。实测 `deepseek-flash` 的流式返回：
+
+```
+269 个 chunk 中：reasoning_content 占 240 个，content 只有 27 个
+```
+
+而原来的 `chat_stream()` 只读 `delta.content`，**把思考全部丢掉** ——
+于是用户对着空白气泡等十几秒，其中大部分时间模型其实正在吐字。
+
+`reasoning_effort` 不是可用的刹车：同一提示词下把它整个关掉，
+思考量只从 804 字降到 722 字。**既然缩短不了，就该让它可见。**
+
+- `nav/llm.py::chat_stream_events()` 产出 `("reasoning", text)` / `("content", text)`，
+  供 UI 分流；`chat_stream()` / `chat_stream_text()` 语义不变（仍产出纯字符串）。
+- 只有思考、没有正文也算「没到」，会走非流式回退（预算翻倍）——
+  否则会流一大段思考然后静默给出空答案。
+- 每次查询把 `thinking_chars` 写进 `queries.jsonl`：
+  「这次为什么慢」因此有确定答案 —— 该值大 = 模型在思考上打转，
+  而不是检索慢或上下文大。
+
+另外，`run()` 里逐文件的章节选择是**并行**的（`ThreadPoolExecutor` + `map` 保序）。
+保序是硬要求：`build_context` 按相关性顺序截断，顺序错了会让边缘章节挤掉最好的来源。
+线程安全的前提是 `_load_tree()` 只读 JSON 文件、`policy` 是 frozen、`m` 加载后只读。
+
 ## 多语料：`registry.py`
 
 上面的 CLI 是一次性建索引 + 查询。要让 UI 驱动（注册目录、看状态、自动跟进

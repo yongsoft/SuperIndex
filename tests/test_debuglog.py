@@ -80,6 +80,30 @@ def test_query_record() -> None:
         check("有 ISO 时间戳", "T" in r["ts"])
 
 
+def test_thinking_chars_recorded() -> None:
+    """`thinking_chars` is what answers "why was this query slow?".
+
+    A reasoning model spends most of its wall clock emitting tokens nobody
+    sees. Without this field the only visible symptom is a slow query, and the
+    cause is indistinguishable from expensive retrieval or a huge context.
+    """
+    print("\n[记录思考量 —— 慢查询的归因字段]")
+    with Sandbox() as tmp:
+        t = debuglog.QueryTrace("问题")
+        t.finish("答案", context_chars=1234, thinking_chars=5678)
+        r = lines(debuglog.QUERY_LOG)[0]
+        check("thinking_chars 落库", r["thinking_chars"] == 5678,
+              str(r.get("thinking_chars")))
+        check("context_chars 落库", r["context_chars"] == 1234,
+              str(r.get("context_chars")))
+        check("answer_chars 仍是答案长度", r["answer_chars"] == 2,
+              str(r["answer_chars"]))
+        # 未传时不应凭空出现字段 —— 老的记录格式保持不变。
+        debuglog.QueryTrace("问题2").finish("答")
+        r2 = lines(debuglog.QUERY_LOG)[1]
+        check("没传就不写该字段", "thinking_chars" not in r2, str(r2.keys()))
+
+
 def test_abort_vs_fail() -> None:
     print("\n[abort（没找到）与 fail（抛异常）的区别]")
     with Sandbox():
@@ -212,6 +236,7 @@ def main() -> int:
     print("debuglog 测试（写入临时目录，不碰真实 results/logs）")
     print("=" * 74)
     test_query_record()
+    test_thinking_chars_recorded()
     test_abort_vs_fail()
     test_read_filters()
     test_query_id_correlation()

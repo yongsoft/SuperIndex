@@ -601,6 +601,83 @@ def test_trace_records_policy() -> None:
               _trace("q2", []).record["policy"] == {})
 
 
+def test_sections_parallel_preserves_order() -> None:
+    """Per-file section routing runs concurrently, but the ORDER must not move.
+
+    `build_context` truncates in relevance order, so a reshuffle would let a
+    marginal section crowd out the best one — the answer would get quietly
+    worse while every individual call still looked correct.
+    """
+    print("\n[并行章节选择：真的并行，且顺序与串行一致]")
+    import time as _time
+
+    import nav.route as route_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="policy-par-"))
+    try:
+        build_index(tmp)
+        corpora = [("c1", tmp / "c1", "语料一", "s1"),
+                   ("c2", tmp / "c2", "语料二", "s2")]
+
+        # --- order: one section call per file, results aligned to files ---
+        with StubLLM(dirs=(0,), files=(0, 1, 2), sections=(0,)) as stub:
+            nav = MultiNavigator(corpora, verbose=False, policy=RoutingPolicy())
+            res = nav.run("2024 年股息")
+            check("选中了 3 个文件", len(res.files) == 3, str(len(res.files)))
+            got = [fe.rel_path for fe, _ in res.sections]
+            want = [f.rel_path for f in res.files]
+            check("sections 顺序与 files 一致", got == want,
+                  f"{got} != {want}")
+
+        # --- single file must not pay for a thread pool ---
+        real_pool = route_mod.ThreadPoolExecutor
+
+        def no_pool(*_a, **_k):
+            raise AssertionError("单文件不该启线程池")
+
+        route_mod.ThreadPoolExecutor = no_pool        # type: ignore[assignment]
+        try:
+            with StubLLM(dirs=(0,), files=(0,), sections=(0,)):
+                nav1 = MultiNavigator(corpora, verbose=False,
+                                      policy=RoutingPolicy())
+                one = nav1.sections_for_all("2024 年股息", [next(iter(
+                    nav1.m.files.values()))], 6)
+            check("单文件走原路径，不启线程池", len(one) == 1, str(len(one)))
+        finally:
+            route_mod.ThreadPoolExecutor = real_pool  # type: ignore[assignment]
+
+        # --- concurrency: N slow calls must overlap, not stack ---
+        # 4 files x 0.25s = 1.0s serial. Assert well under that; a 3x margin
+        # keeps this from flapping on a busy machine while still failing loudly
+        # if the pool ever degrades back to a serial loop.
+        DELAY, N = 0.25, 4
+        from nav import llm as _llm
+
+        def slow_json(prompt, **_kw):
+            _time.sleep(DELAY)
+            if "章节列表" in prompt:
+                return {"sections": [0]}
+            return {"dirs": [0], "files": [0, 1, 2, 3], "descend": [],
+                    "pick": [0, 1, 2, 3]}
+
+        saved = (_llm.chat_json, _llm.chat)
+        _llm.chat_json = slow_json
+        _llm.chat = lambda prompt, **_kw: ""
+        try:
+            nav2 = MultiNavigator(corpora, verbose=False,
+                                  policy=RoutingPolicy())
+            files = list(nav2.m.files.values())[:N]
+            t0 = _time.time()
+            nav2.sections_for_all("2024 年股息", files, 6)
+            took = _time.time() - t0
+            check(f"{len(files)} 个文件并行（{DELAY}s/次）总耗时 < {DELAY*N*0.75:.2f}s",
+                  took < DELAY * N * 0.75, f"{took:.2f}s")
+        finally:
+            _llm.chat_json, _llm.chat = saved
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     print("=" * 74)
     print("policy 测试（临时目录 + 打桩 LLM，不联网）")
@@ -618,6 +695,7 @@ def main() -> int:
     test_overlays()
     test_bind_policy_falls_back()
     test_route_integration()
+    test_sections_parallel_preserves_order()
     test_trace_records_policy()
     print()
     print("=" * 74)
