@@ -1,18 +1,21 @@
 # index/ — 所有索引集中于此
 
-这个目录是 SuperIndex 的**唯一索引存储位置**。所有树、manifest、注册表都在这里，
-按来源分组；**源文件本身不动**，索引里只记录它们的绝对路径。
+这个目录是 SuperIndex 的**唯一索引存储位置** —— 应用在查询时读的所有东西都在
+这里，此外没有第二个索引库。**源文件本身不动**，索引里只记录它们的绝对路径。
 
 ```
 index/
 ├── registry.json            语料注册表：每个语料的源路径、状态、统计
-├── corpora/                 注册进来的系统目录，一个语料一个子目录
-│   └── <corpus-id>/
-│       ├── manifest.json      目录树 + 每个文件的描述
-│       └── trees/<key>.json   每个文件的章节树
-├── pageindex/               PageIndex 文档库（PDF 走 doc store 那条路时用）
-└── trees/                   PageIndex 离线树（scripts/01_build_trees.py 产出）
+└── corpora/                 注册进来的系统目录，一个语料一个子目录
+    └── <corpus-id>/
+        ├── manifest.json      目录树 + 每个文件的描述（含检索别名 topic）
+        └── trees/<key>.json   每个文件的章节树 + 正文行
 ```
+
+> **命令行与诊断脚本的产物不在这里。** 那些是实验输出，写在 `results/` 下
+> （`results/pageindex/`、`results/trees/`）。`index/` 只装产品索引，
+> 所以设 `SUPERINDEX_INDEX_DIR` 时不用担心漏掉一半 —— 另外那两处本来就
+> 不该跟着走。
 
 ## 投放区：`data/`
 

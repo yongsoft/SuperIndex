@@ -41,14 +41,16 @@ DEFAULT_INCLUDES = {".md", ".markdown", ".txt", ".pdf"}
 DEFAULT_EXCLUDES = {".git", "node_modules", "__pycache__", ".venv", "venv",
                     ".idea", ".vscode", "dist", "build"}
 
-# Every index this project writes lives under one root, so registering a corpus
-# never writes into the directory being indexed. Point SUPERINDEX_INDEX_DIR at
-# a bigger or shared volume to move the whole store elsewhere.
+# The product's index store. Everything the app reads at query time lives here,
+# so registering a corpus never writes into the directory being indexed.
+# Point SUPERINDEX_INDEX_DIR at a bigger or shared volume to move it.
+#
+# CLI and diagnostic scripts write to results/ instead: those are experiment
+# output, not part of the product, and are deliberately not relocated by that
+# environment variable.
 INDEX_ROOT = Path(os.getenv("SUPERINDEX_INDEX_DIR") or (ROOT / "index"))
 REGISTRY_FILE = INDEX_ROOT / "registry.json"
 CORPORA_ROOT = INDEX_ROOT / "corpora"
-PAGEINDEX_STORE = INDEX_ROOT / "pageindex"
-TREES_ROOT = INDEX_ROOT / "trees"
 
 # The default place to put documents. Each immediate subdirectory becomes a
 # corpus automatically, so dropping a folder in here is the whole workflow.

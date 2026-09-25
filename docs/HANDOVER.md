@@ -236,14 +236,12 @@ PAGEINDEX_CHAT_MODEL=deepseek/deepseek-flash
 │   ├── bad_ppt_derived.md         PPT 转出的坏样例
 │   └── test_index/                已建好的 nav 索引（带摘要，可直接查）
 │
-├── index/                     ★ 集中索引库（构建产物，gitignore）
+├── index/                     ★ 产品索引库（构建产物，gitignore）
 │   ├── README.md                  布局说明（**提交**）
 │   ├── registry.json              语料注册表：源路径 + 状态 + 统计
-│   ├── corpora/<id>/              UI 注册的语料，一个语料一个目录
-│   │   ├── manifest.json            目录树 + 文件描述
-│   │   └── trees/<key>.json         章节树
-│   ├── pageindex/                 PageIndex 文档库（3 份文档）
-│   └── trees/                     10 份 PDF 的离线结构树（阶段1产物）
+│   └── corpora/<id>/              UI 注册的语料，一个语料一个目录
+│       ├── manifest.json            目录树 + 文件描述 + 检索别名 topic
+│       └── trees/<key>.json         章节树 + 正文行
 │
 └── results/                   实验产物（日志与问答结果）
     ├── logs/                      各种运行日志（webapp.log 144KB，可清）
@@ -722,7 +720,7 @@ $PY -m pip show pageindex | grep -E "Version|Location"
 # 2. 确认索引还在（应打印 3 份）
 $PY -c "
 import json; from pathlib import Path
-d=json.loads(Path('index/pageindex/manifest.json').read_text())['docs']
+d=json.loads(Path('results/pageindex/manifest.json').read_text())['docs']
 print(len(d), '份已索引')"
 
 # 3. 跑一道题验证端到端（约 5-10 秒；--out 用项目内相对路径）

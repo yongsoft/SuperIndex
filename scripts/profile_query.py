@@ -26,7 +26,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-STORE = ROOT / "index" / "pageindex"
+STORE = ROOT / "results" / "pageindex"
 DATA_DIR = ROOT / "data" / "aia_reports"
 
 

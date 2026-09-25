@@ -22,8 +22,8 @@ from pageindex.flash import page_index_flash
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data" / "aia_reports"
-# Central index store — see index/README.md
-OUT_DIR = ROOT / "index" / "trees"
+# Diagnostic artefact, not part of the product index — see index/README.md
+OUT_DIR = ROOT / "results" / "trees"
 
 
 def walk(nodes, depth=1):

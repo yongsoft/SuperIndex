@@ -325,12 +325,16 @@ files stay exactly where they are.**
 ```
 index/
 ├── registry.json            registered corpora: source path, status, stats
-├── corpora/<id>/            one index per registered directory
-│   ├── manifest.json          directory tree + per-file descriptions
-│   └── trees/<key>.json       chapter tree per document
-├── pageindex/               PageIndex doc store
-└── trees/                   PageIndex offline flash trees
+└── corpora/<id>/            one index per registered directory
+    ├── manifest.json          directory tree + per-file descriptions
+    └── trees/<key>.json       chapter tree + source lines per document
 ```
+
+**That is the whole store — there is no second one.** The CLI and diagnostic
+scripts under `scripts/` write to `results/` instead, because their output is
+experiment material rather than something the app reads at query time. So
+`SUPERINDEX_INDEX_DIR` moves the product index and nothing else, and there is no
+"half the indexes followed it" surprise.
 
 Registering `/data/reports` writes **only** to `index/corpora/<id>/`; the source
 directory is never written to. The registry stores the source's **absolute

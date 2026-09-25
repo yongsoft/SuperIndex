@@ -38,7 +38,7 @@ load_dotenv(ROOT / ".env")
 
 DATA_DIR = ROOT / "data" / "aia_reports"
 RESULTS = ROOT / "results"
-STORE = ROOT / "index" / "pageindex"
+STORE = ROOT / "results" / "pageindex"
 QUESTIONS = Path(__file__).resolve().parent / "questions.json"
 
 DEFAULT_INDEX_MODEL = "gpt-5-mini"
