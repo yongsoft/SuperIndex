@@ -482,6 +482,65 @@ class Registry:
         return self._watcher is not None and self._watcher.is_alive()
 
     # ── querying ─────────────────────────────────────────────────────────
+    def corpus_tree(self, cid: str, *, max_depth: int = 12,
+                    max_files: int = 400) -> dict:
+        """The document tree of one corpus, for the UI's expandable listing.
+
+        Reads the index, not the filesystem: the point of the tree view is to
+        show what has been indexed, which is not always what is on disk (a
+        dropped folder is indexed within one watcher tick).
+        """
+        c = self.get(cid)
+        if c is None:
+            return {"error": "unknown corpus"}
+        idir = Path(c.index_dir)
+        if not (idir / "manifest.json").is_file():
+            return {"error": "not indexed yet"}
+        m = Manifest.load(idir)
+
+        dirs_by_parent: dict[str, list] = {}
+        for d in m.dirs.values():
+            if d.rel_path == "" or d.parent is None:
+                continue
+            dirs_by_parent.setdefault(d.parent, []).append(d)
+
+        files_by_parent: dict[str, list] = {}
+        for f in m.files.values():
+            files_by_parent.setdefault(f.parent or "", []).append(f)
+
+        shown = [0]
+
+        def build(parent: str, depth: int) -> list[dict]:
+            out: list[dict] = []
+            if depth > max_depth:
+                return out
+            for d in sorted(dirs_by_parent.get(parent, []),
+                            key=lambda x: x.name.lower()):
+                out.append({
+                    "type": "dir", "name": d.name, "path": d.rel_path,
+                    "n_files": d.n_files, "summary": d.summary or "",
+                    "children": build(d.rel_path, depth + 1),
+                })
+            for f in sorted(files_by_parent.get(parent, []),
+                            key=lambda x: x.name.lower()):
+                if shown[0] >= max_files:
+                    break
+                shown[0] += 1
+                out.append({
+                    "type": "file", "name": f.name, "path": f.rel_path,
+                    "n_chapters": f.n_chapters,
+                    "has_summary": bool(f.summary),
+                })
+            return out
+
+        return {
+            "id": c.id, "name": c.name,
+            "n_files": len(m.files), "n_dirs": max(0, len(m.dirs) - 1),
+            "n_chapters": sum(f.n_chapters for f in m.files.values()),
+            "truncated": shown[0] >= max_files,
+            "nodes": build("", 0),
+        }
+
     def navigator(self, corpus_ids: Optional[list[str]] = None,
                   *, verbose: bool = False):
         """A MultiNavigator over the selected corpora.

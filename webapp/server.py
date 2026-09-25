@@ -172,6 +172,10 @@ class Handler(BaseHTTPRequestHandler):
                     only_failed=q.get("failed", ["0"])[0] in ("1", "true"),
                     query_id=q.get("id", [""])[0]),
             })
+        elif path.startswith("/api/corpora/") and path.endswith("/tree"):
+            cid = path[len("/api/corpora/"):-len("/tree")]
+            tree = reg.corpus_tree(cid)
+            self._json(tree, 404 if tree.get("error") else 200)
         elif path == "/api/browse":
             q = parse_qs(url.query)
             self._json(browse(q.get("path", [str(DATA_ROOT)])[0]))

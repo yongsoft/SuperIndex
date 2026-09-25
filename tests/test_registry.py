@@ -298,6 +298,31 @@ def _watcher_body(tmp: Path) -> None:
     reg.stop_watcher()
 
 
+def test_corpus_tree(tmp: Path) -> None:
+    print("\n[corpus_tree —— 给 UI 的文档树]")
+    reg = new_registry(tmp / "tree")
+    src = make_corpus(tmp / "tree" / "src", "alpha", SAMPLE)
+    c = reg.add(str(src), name="alpha")
+    reg.index(c.id, summarize=False)
+    t = reg.corpus_tree(c.id)
+    check("基本元数据", t["id"] == c.id and t["name"] == "alpha"
+          and t["n_files"] == 3 and t["n_chapters"] > 0,
+          str({k:t[k] for k in ("n_files","n_dirs","n_chapters")}))
+    check("顶层 2 个节点（2024/2025，fixture 决定的）",
+          {n["name"] for n in t["nodes"]} == {"2024", "2025"},
+          str([n["name"] for n in t["nodes"]]))
+    n2024 = next(n for n in t["nodes"] if n["name"] == "2024")
+    check("2024 下有 annual",
+          [c["name"] for c in n2024["children"]] == ["annual"],
+          str([c["name"] for c in n2024["children"]]))
+    annual = n2024["children"][0]
+    file_nodes = [c for c in annual["children"] if c["type"] == "file"]
+    check("annual 里有 .md 文件", any(f["name"].endswith(".md") for f in file_nodes))
+    check("文件带章节数", all(f.get("n_chapters", 0) > 0 for f in file_nodes))
+    check("unknown id 返回 error",
+          reg.corpus_tree("nonexistent").get("error") == "unknown corpus")
+
+
 def test_data_root_dropzone(tmp: Path) -> None:
     print("\n[data/ 投放区：自动发现与注册]")
     with fake_data_root(tmp / "dropzone" / "data") as fake_data:
@@ -363,6 +388,7 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_corpus_tree(tmp)
         test_data_root_dropzone(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

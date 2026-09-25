@@ -6,394 +6,446 @@
 <title>SuperIndex</title>
 <style>
 :root{
-  --bg:#FBFAF7; --surface:#FFFFFF; --surface-2:#F1EFE8; --border:rgba(0,0,0,.13);
-  --border-soft:rgba(0,0,0,.07); --text:#2C2C2A; --text-2:#5F5E5A; --text-3:#888780;
-  --accent:#185FA5; --accent-soft:#E6F1FB; --ok:#0F6E56; --ok-soft:#E1F5EE;
-  --warn:#854F0B; --warn-soft:#FAEEDA; --err:#A32D2D; --err-soft:#FCEBEB;
+  --bg:#F7F8FA; --surface:#FFFFFF; --surface-2:#F1F3F6; --line:#E4E7EC;
+  --line-soft:#EDF0F4; --text:#101828; --text-2:#475467; --text-3:#98A2B3;
+  --brand:#1C4E70; --brand-2:#0F2942; --accent:#2563EB; --accent-soft:#EFF4FF;
+  --ok:#0F7B5F; --ok-soft:#E7F5F0; --warn:#B45309; --warn-soft:#FDF3E3;
+  --err:#B42318; --err-soft:#FDECEA;
+  --r:10px;
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
-  --bg:#1a1a19; --surface:#232322; --surface-2:#2C2C2A; --border:rgba(255,255,255,.16);
-  --border-soft:rgba(255,255,255,.08); --text:#F1EFE8; --text-2:#B4B2A9; --text-3:#888780;
-  --accent:#85B7EB; --accent-soft:#0C447C; --ok:#5DCAA5; --ok-soft:#085041;
-  --warn:#EF9F27; --warn-soft:#633806; --err:#F09595; --err-soft:#501313;
+  --bg:#15181C; --surface:#1C2026; --surface-2:#23282F; --line:#2E343D;
+  --line-soft:#262B32; --text:#E7EAEE; --text-2:#A6AEB9; --text-3:#78818D;
+  --brand:#1C4E70; --brand-2:#0F2942; --accent:#5B93F5; --accent-soft:#1B2A44;
+  --ok:#5AC99B; --ok-soft:#16302A; --warn:#E5A860; --warn-soft:#33281A;
+  --err:#F08A80; --err-soft:#3A211E;
 }}
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
-.app{display:grid;grid-template-columns:340px 1fr;height:100%}
-aside{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
-.aside-hd{padding:16px 16px 12px;border-bottom:1px solid var(--border-soft)}
-.aside-hd h1{font-size:15px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em}
-.aside-hd .meta{font-size:11px;color:var(--text-3);font-family:var(--mono)}
-.corpora{flex:1;overflow-y:auto;padding:12px}
-main{display:flex;flex-direction:column;min-height:0;min-width:0}
-.btn{font:inherit;font-size:12px;padding:5px 11px;border-radius:8px;border:1px solid var(--border);
-  background:var(--surface);color:var(--text);cursor:pointer;white-space:nowrap}
-.btn:hover{border-color:var(--text-3)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.primary:hover{opacity:.9}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn.sm{font-size:11px;padding:3px 8px;border-radius:6px}
-.card{border:1px solid var(--border-soft);border-radius:12px;padding:12px;margin-bottom:10px;background:var(--surface)}
-.card.on{border-color:var(--accent);background:var(--accent-soft)}
-.card.missing{border-color:var(--err);background:var(--err-soft)}
-.card-hd{display:flex;align-items:flex-start;gap:8px}
-.card-hd input[type=checkbox]{margin:3px 0 0;flex:none;cursor:pointer}
-.card-t{flex:1;min-width:0}
-.card-name{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.card-path{font-size:11px;color:var(--text-3);font-family:var(--mono);word-break:break-all;margin-top:2px}
-.badge{display:inline-block;font-size:10px;padding:1px 7px;border-radius:99px;font-weight:500;vertical-align:middle}
-.badge.ready{background:var(--ok-soft);color:var(--ok)}
-.badge.indexing{background:var(--warn-soft);color:var(--warn)}
-.badge.pending{background:var(--surface-2);color:var(--text-2)}
-.badge.error{background:var(--err-soft);color:var(--err)}
-.stats{font-size:11px;color:var(--text-2);margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 10px}
-.acts{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
-.empty{color:var(--text-3);font-size:12px;text-align:center;padding:28px 12px;line-height:1.8}
-.chat{flex:1;overflow-y:auto;padding:24px 28px;min-height:0}
-.msg{margin-bottom:22px;max-width:820px}
-.msg .who{font-size:11px;color:var(--text-3);margin-bottom:6px;font-family:var(--mono)}
-.msg.user .body{background:var(--accent-soft);border-radius:12px;padding:10px 14px;display:inline-block}
-.msg.bot .body{white-space:pre-wrap;word-wrap:break-word}
-.trace{border-left:2px solid var(--border);margin:0 0 12px;padding:2px 0 2px 14px}
-.trace summary{cursor:pointer;font-size:12px;color:var(--text-2);user-select:none}
-.trace .step{font-size:12px;color:var(--text-2);margin-top:6px;font-family:var(--mono);line-height:1.7}
-.trace .step b{color:var(--text);font-weight:500}
-.trace .note{color:var(--warn)}
-.sources{margin-top:14px;border-top:1px solid var(--border-soft);padding-top:10px}
-.sources .src{font-size:12px;color:var(--text-2);font-family:var(--mono);margin:3px 0}
-.stage{font-size:12px;color:var(--text-3);font-family:var(--mono);margin:6px 0}
-.composer{border-top:1px solid var(--border);padding:14px 28px 18px;background:var(--surface)}
-.composer-row{display:flex;gap:10px;align-items:flex-end;max-width:820px}
-textarea{flex:1;font:inherit;font-size:14px;padding:10px 12px;border-radius:10px;border:1px solid var(--border);
-  background:var(--bg);color:var(--text);resize:none;min-height:44px;max-height:180px;line-height:1.5}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.app{display:flex;flex-direction:column;height:100%}
+
+/* ── banner ─────────────────────────────────────────────────────────── */
+.banner{
+  position:relative;flex:none;overflow:hidden;
+  background:linear-gradient(118deg,var(--brand-2) 0%,var(--brand) 62%,#2A6C8E 100%);
+  color:#fff;padding:18px 24px;
+}
+.banner::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(560px 180px at 78% -30%, rgba(255,255,255,.16), transparent 70%),
+    radial-gradient(320px 120px at 12% 130%, rgba(38,120,170,.35), transparent 70%);
+}
+.banner-in{position:relative;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.logo{
+  width:38px;height:38px;flex:none;border-radius:9px;
+  background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.28);
+  display:grid;place-items:center;
+}
+.logo svg{width:20px;height:20px;display:block}
+.brand h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.2px}
+.brand p{margin:2px 0 0;font-size:12px;color:rgba(255,255,255,.72)}
+.chips{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.chip{
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
+  border-radius:99px;padding:4px 11px;font-size:11.5px;color:rgba(255,255,255,.92);
+  display:flex;align-items:center;gap:6px;white-space:nowrap;
+}
+.chip b{font-weight:600;color:#fff}
+.dot{width:6px;height:6px;border-radius:50%;background:#5AC99B;flex:none}
+.dot.off{background:rgba(255,255,255,.45)}
+
+/* ── body ───────────────────────────────────────────────────────────── */
+.body{flex:1;display:grid;grid-template-columns:328px 1fr;min-height:0}
+aside{background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.aside-hd{
+  flex:none;padding:12px 14px;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.aside-hd h2{margin:0;font-size:12px;font-weight:600;color:var(--text-2);letter-spacing:.4px;text-transform:uppercase}
+.list{flex:1;overflow-y:auto;padding:8px}
+main{display:flex;flex-direction:column;min-width:0;min-height:0}
+
+/* ── corpus card ────────────────────────────────────────────────────── */
+.card{border:1px solid var(--line);border-radius:var(--r);margin-bottom:8px;background:var(--surface);overflow:hidden}
+.card.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.card.bad{border-color:var(--err)}
+.row{display:flex;align-items:center;gap:8px;padding:10px 11px}
+.row:hover{background:var(--surface-2)}
+.cb{width:15px;height:15px;flex:none;cursor:pointer;accent-color:var(--accent)}
+.cb:disabled{opacity:.35;cursor:not-allowed}
+.nm{flex:1;min-width:0;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nm .path{display:block;font-weight:400;font-size:11px;color:var(--text-3);font-family:var(--mono)}
+.tag{font-size:10px;padding:1px 7px;border-radius:99px;font-weight:500;flex:none;white-space:nowrap}
+.tag.ready{background:var(--ok-soft);color:var(--ok)}
+.tag.indexing,.tag.pending{background:var(--warn-soft);color:var(--warn)}
+.tag.error{background:var(--err-soft);color:var(--err)}
+.caret{
+  flex:none;width:18px;height:18px;border-radius:5px;cursor:pointer;border:0;background:transparent;
+  color:var(--text-3);font-size:10px;display:grid;place-items:center;transition:transform .12s
+}
+.caret:hover{background:var(--surface-2);color:var(--text)}
+.caret.open{transform:rotate(90deg)}
+.meta{padding:0 11px 9px;font-size:11px;color:var(--text-3);display:flex;gap:10px;flex-wrap:wrap}
+.stage{padding:0 11px 9px;font-size:11px;color:var(--warn)}
+.errmsg{margin:0 11px 9px;padding:7px 9px;border-radius:7px;background:var(--err-soft);color:var(--err);font-size:11.5px}
+.acts{display:none;gap:6px;padding:0 11px 10px}
+.card:hover .acts,.card.open .acts{display:flex}
+
+/* ── file tree ──────────────────────────────────────────────────────── */
+.tree{border-top:1px solid var(--line-soft);background:var(--surface-2);padding:6px 0;max-height:340px;overflow-y:auto}
+.tn{display:flex;align-items:center;gap:6px;padding:2px 11px;font-size:12px;color:var(--text-2);cursor:default}
+.tn.dir{cursor:pointer}
+.tn.dir:hover{background:var(--surface);color:var(--text)}
+.tn .k{width:12px;flex:none;color:var(--text-3);font-size:9px}
+.tn .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tn .c{margin-left:auto;font-size:10px;color:var(--text-3);font-family:var(--mono);flex:none}
+.tn.file .t{color:var(--text-2)}
+.tn .no{width:5px;height:5px;border-radius:50%;background:var(--text-3);flex:none;opacity:.4}
+.tempty{padding:8px 12px;font-size:11.5px;color:var(--text-3)}
+
+/* ── chat ───────────────────────────────────────────────────────────── */
+.chat{flex:1;overflow-y:auto;padding:24px 30px}
+.msg{margin-bottom:22px;max-width:840px}
+.who{font-size:11px;color:var(--text-3);margin-bottom:6px;letter-spacing:.3px}
+.msg.user .bubble{
+  background:var(--accent-soft);border:1px solid var(--line);border-radius:12px;
+  padding:9px 14px;display:inline-block;max-width:100%;white-space:pre-wrap}
+.msg.bot .bubble{white-space:pre-wrap;word-wrap:break-word}
+.trace{border:1px solid var(--line);border-radius:9px;margin:0 0 12px;overflow:hidden;background:var(--surface)}
+.trace summary{
+  cursor:pointer;font-size:12px;color:var(--text-2);padding:8px 12px;user-select:none;
+  display:flex;align-items:center;gap:7px;background:var(--surface-2)
+}
+.trace summary::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none}
+.steps{padding:6px 12px 10px}
+.step{font-size:12px;color:var(--text-2);font-family:var(--mono);padding:3px 0;line-height:1.6}
+.step b{color:var(--text);font-weight:600}
+.step .fb{color:var(--warn)}
+.srcs{margin-top:14px;border-top:1px solid var(--line-soft);padding-top:10px;font-size:11.5px;color:var(--text-3);font-family:var(--mono)}
+.stage{font-size:11.5px;color:var(--text-3);font-family:var(--mono);margin:6px 0}
+.empty{color:var(--text-3);font-size:13px;text-align:center;padding:40px 20px;line-height:1.9}
+.composer{flex:none;border-top:1px solid var(--line);padding:13px 30px 16px;background:var(--surface)}
+.crow{display:flex;gap:9px;align-items:flex-end;max-width:840px}
+textarea{
+  flex:1;font:inherit;font-size:14px;padding:9px 12px;border-radius:9px;border:1px solid var(--line);
+  background:var(--bg);color:var(--text);resize:none;min-height:42px;max-height:170px;line-height:1.5
+}
 textarea:focus{outline:none;border-color:var(--accent)}
-.scope{font-size:11px;color:var(--text-3);margin-top:8px;max-width:820px}
-dialog{border:1px solid var(--border);border-radius:14px;padding:0;background:var(--surface);color:var(--text);
-  width:min(640px,92vw);max-height:80vh}
-dialog::backdrop{background:rgba(0,0,0,.35)}
-.dlg-hd{padding:14px 18px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center}
-.dlg-hd h2{font-size:14px;font-weight:600;margin:0}
-.dlg-body{padding:14px 18px;max-height:52vh;overflow-y:auto}
-.dlg-ft{padding:12px 18px;border-top:1px solid var(--border-soft);display:flex;justify-content:space-between;
-  align-items:center;gap:10px}
+.scope{font-size:11px;color:var(--text-3);margin-top:7px;max-width:840px}
+.btn{
+  font:inherit;font-size:12px;padding:6px 13px;border-radius:8px;border:1px solid var(--line);
+  background:var(--surface);color:var(--text);cursor:pointer;white-space:nowrap
+}
+.btn:hover{border-color:var(--text-3)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{opacity:.9}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{font-size:11px;padding:3px 9px;border-radius:6px}
+
+/* ── dialog ─────────────────────────────────────────────────────────── */
+dialog{border:1px solid var(--line);border-radius:12px;padding:0;background:var(--surface);color:var(--text);width:min(640px,92vw);max-height:80vh}
+dialog::backdrop{background:rgba(16,24,40,.42)}
+.dhd{padding:13px 18px;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:center}
+.dhd h3{margin:0;font-size:14px;font-weight:600}
+.dbd{padding:14px 18px;max-height:52vh;overflow-y:auto}
+.dft{padding:11px 18px;border-top:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.hint{font-size:12px;color:var(--text-2);background:var(--surface-2);border-radius:8px;padding:9px 11px;line-height:1.6}
+.hint code{font-family:var(--mono);font-size:11px;background:var(--surface);padding:1px 5px;border-radius:4px}
+.hint strong{font-weight:600;color:var(--text)}
 .crumb{font-family:var(--mono);font-size:12px;color:var(--text-2);word-break:break-all;flex:1}
 .dirs{list-style:none;margin:10px 0 0;padding:0}
-.dirs li{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center}
+.dirs li{padding:7px 10px;border-radius:7px;cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:center}
 .dirs li:hover{background:var(--surface-2)}
-.dirs li .ico{color:var(--text-3);font-family:var(--mono);font-size:11px}
+.dirs li .i{color:var(--text-3);font-family:var(--mono);font-size:11px}
 label.chk{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--text-2);cursor:pointer}
 .err{color:var(--err);font-size:12px;margin-top:6px}
-.hint{font-size:12px;color:var(--text-2);background:var(--surface-2);border-radius:8px;padding:9px 11px;line-height:1.65}
-.hint code{font-family:var(--mono);font-size:11px;background:var(--surface);padding:1px 5px;border-radius:4px}
-.hint strong{font-weight:500;color:var(--text)}
 </style>
 </head>
 <body>
 <div class="app">
-  <aside>
-    <div class="aside-hd">
-      <h1>SuperIndex</h1>
-      <div class="meta" id="meta">加载中…</div>
-    </div>
-    <div class="corpora" id="corpora"></div>
-    <div style="padding:12px;border-top:1px solid var(--border-soft)">
-      <button class="btn primary" id="addBtn" style="width:100%">+ 添加目录</button>
-    </div>
-  </aside>
 
-  <main>
-    <div class="chat" id="chat">
-      <div class="empty">
-        左侧添加一个目录，系统会自动建立索引。<br>
-        索引完成的目录会自动进入提问范围，也可以只勾选部分目录。<br>
-        目录内的文件变化会被自动检测并更新描述。
+  <header class="banner">
+    <div class="banner-in">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10l2 2.5h6.5A1.5 1.5 0 0 1 20 8v10.5A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/>
+          <path d="M8 11h8M8 14.5h5"/>
+        </svg>
       </div>
-    </div>
-    <div class="composer">
-      <div class="composer-row">
-        <textarea id="q" rows="1" placeholder="就选中的目录提问…（Enter 发送，Shift+Enter 换行）"></textarea>
-        <button class="btn primary" id="send" disabled>发送</button>
+      <div class="brand">
+        <h1>SuperIndex</h1>
+        <p>Structure-based retrieval across your document directories</p>
       </div>
-      <div class="scope" id="scope">尚未选择范围</div>
+      <div class="chips" id="chips"></div>
     </div>
-  </main>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="aside-hd">
+        <h2>Corpora</h2>
+        <button class="btn sm" id="addBtn">+ Add</button>
+      </div>
+      <div class="list" id="list"></div>
+    </aside>
+
+    <main>
+      <div class="chat" id="chat">
+        <div class="empty">
+          Put documents under <b>data/</b> and they are indexed automatically.<br>
+          Tick a corpus to search it, or click ▸ to see what it contains.
+        </div>
+      </div>
+      <div class="composer">
+        <div class="crow">
+          <textarea id="q" rows="1" placeholder="Ask across the selected corpora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+          <button class="btn pri" id="send" disabled>Send</button>
+        </div>
+        <div class="scope" id="scope">No scope selected</div>
+      </div>
+    </main>
+  </div>
 </div>
 
 <dialog id="dlg">
-  <div class="dlg-hd">
-    <h2>选择要索引的目录</h2>
-    <button class="btn sm" id="dlgClose">关闭</button>
-  </div>
-  <div class="dlg-body">
+  <div class="dhd"><h3>Register a directory</h3><button class="btn sm" id="dlgClose">Close</button></div>
+  <div class="dbd">
     <div class="hint">
-      把目录放进 <code id="dataRootLabel">data/</code> 就会自动被索引，不用在这里操作。
-      下面的浏览器用于注册 <strong>data/ 之外</strong>的目录。
+      Drop a folder into <code id="drLabel">data/</code> and it is indexed automatically — no need
+      to register it. Use this browser for directories <strong>outside data/</strong>.
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
-      <button class="btn sm" id="upBtn">↑ 上级</button>
+      <button class="btn sm" id="upBtn">↑ Up</button>
       <span class="crumb" id="crumb">/</span>
     </div>
     <ul class="dirs" id="dirs"></ul>
     <div class="err" id="dlgErr"></div>
   </div>
-  <div class="dlg-ft">
-    <label class="chk"><input type="checkbox" id="deep"> 深度索引（同时生成章节摘要，成本更高）</label>
+  <div class="dft">
+    <label class="chk"><input type="checkbox" id="deep"> Deep index (chapter summaries, slower)</label>
     <div style="display:flex;gap:8px">
-      <input id="alias" placeholder="显示名称（可选）" style="font:inherit;font-size:12px;padding:5px 9px;
-        border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:150px">
-      <button class="btn primary" id="useBtn">索引此目录</button>
+      <input id="alias" placeholder="Display name (optional)">
+      <button class="btn pri" id="useBtn">Index this folder</button>
     </div>
   </div>
 </dialog>
 
 <script>
 const $ = s => document.querySelector(s);
-let STATE = {corpora: []};
-let CURRENT = null;
-let BROWSE_PATH = null;
+let S = {corpora:[]};
+const OPEN = new Set();          // corpus ids with the tree expanded
+const TREE = {};                 // cached trees
+let CUR = null;
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-// Answers arrive as Markdown. Escape first, then apply only the two inline
-// forms worth rendering — bold and code. Anything richer would mean injecting
-// model output as HTML, which is not worth the risk here.
-const mdInline = s => esc(s)
+const md = s => esc(s)
   .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
   .replace(/`([^`\n]+)`/g, '<code>$1</code>');
 
-const nameOf = id => (STATE.corpora.find(c => c.id === id) || {}).name || id;
-
-// 把 "8828b4a6/友邦保险/2024/x.md" 显示成 "测试语料 A / 友邦保险/2024/x.md"
-function pretty(rel){
-  const i = rel.indexOf('/');
-  if (i < 0) return rel;
-  return nameOf(rel.slice(0, i)) + ' / ' + rel.slice(i + 1);
-}
-function fmtTime(t){ return t ? new Date(t * 1000).toLocaleString('zh-CN', {hour12:false}) : '—'; }
-
-// ── 状态轮询 ────────────────────────────────────────────────────────────
-async function loadState(){
-  try{
-    const r = await fetch('/api/state');
-    STATE = await r.json();
-  }catch(e){ return; }
-  renderMeta(); renderCorpora(); renderScope();
+// ── state ───────────────────────────────────────────────────────────────
+async function load(){
+  try{ S = await (await fetch('/api/state')).json(); }catch(e){ return; }
+  chips(); renderList(); renderScope();
 }
 
-function renderMeta(){
-  if (STATE.data_root){
-    const el = $('#dataRootLabel');
-    if (el){
-      // 显示成相对项目根的短路径，太长就只留目录名
-      const parts = STATE.data_root.split('/').filter(Boolean);
-      el.textContent = (parts[parts.length - 1] || 'data') + '/';
-      el.title = STATE.data_root;
-    }
+function chips(){
+  const ready = S.corpora.filter(c => c.ready).length;
+  $('#chips').innerHTML = [
+    `<span class="chip">Corpora <b>${ready}/${S.corpora.length||0}</b></span>`,
+    `<span class="chip"><i class="dot ${S.watching?'':'off'}"></i>${S.watching?'Watching':'Idle'}</span>`,
+    `<span class="chip">${esc(S.chat_model||'')}</span>`,
+  ].join('');
+  if (S.data_root){
+    const p = S.data_root.split('/').filter(Boolean);
+    $('#drLabel').textContent = (p[p.length-1]||'data') + '/';
   }
-  const ready = STATE.corpora.filter(c => c.ready).length;
-  $('#meta').textContent =
-    `${STATE.corpora.length} 个目录 · ${ready} 就绪 · ${STATE.watching ? '监控中' : '未监控'}\n${STATE.chat_model}`;
 }
 
-function renderCorpora(){
-  const box = $('#corpora');
-  if (!STATE.corpora.length){
-    box.innerHTML = '<div class="empty">还没有注册目录<br>点击下方「添加目录」开始</div>';
+function renderList(){
+  const box = $('#list');
+  if (!S.corpora.length){
+    box.innerHTML = '<div class="tempty">No corpora yet. Add a directory.</div>';
     return;
   }
-  box.innerHTML = STATE.corpora.map(c => {
-    const ch = c.changes || {};
-    const nch = (ch.added?.length || 0) + (ch.changed?.length || 0) + (ch.removed?.length || 0);
-    const busy = c.status === 'indexing' || (STATE.busy || []).includes(c.id);
-    return `
-    <div class="card ${c.ready ? 'on' : ''} ${c.missing ? 'missing' : ''}" data-id="${c.id}">
-      <div class="card-hd">
-        <input type="checkbox" data-sel="${c.id}" ${c.ready ? 'checked' : 'disabled'}>
-        <div class="card-t">
-          <div class="card-name">${esc(c.name)}${
-            STATE.data_root && c.path.startsWith(STATE.data_root)
-              ? ' <span class="badge pending" style="margin-left:2px">data</span>' : ''}</div>
-          <div class="card-path">${esc(c.path)}</div>
-        </div>
+  box.innerHTML = S.corpora.map(c => {
+    const open = OPEN.has(c.id);
+    const busy = c.status === 'indexing' || (S.busy||[]).includes(c.id);
+    return `<div class="card ${c.ready?'on':''} ${c.status==='error'||c.missing?'bad':''} ${open?'open':''}" data-id="${c.id}">
+      <div class="row">
+        <input type="checkbox" class="cb" data-sel="${c.id}" ${c.ready?'checked':'disabled'}>
+        <div class="nm">${esc(c.name)}<span class="path">${esc(c.path)}</span></div>
+        <span class="tag ${c.status}">${c.status}</span>
+        <button class="caret ${open?'open':''}" data-tog="${c.id}">▶</button>
       </div>
-      <div style="margin-top:7px">
-        <span class="badge ${c.status}">${c.status}</span>
-        ${c.deep_index ? '<span class="badge pending" style="margin-left:4px">深度</span>' : ''}
-        ${nch && c.ready ? `<span class="badge indexing" style="margin-left:4px">待更新 ${nch}</span>` : ''}
-      </div>
-      ${c.stage ? `<div class="stats">${esc(c.stage)}</div>` : ''}
-      ${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}
-      ${c.ready ? `<div class="stats">
-        <span>${c.n_files} 文件</span><span>${c.n_dirs} 目录</span>
-        <span>${c.n_chapters} 章节</span><span>${c.n_summarized} 有描述</span></div>` : ''}
-      ${c.indexed_at ? `<div class="stats"><span>索引于 ${fmtTime(c.indexed_at)}</span></div>` : ''}
+      ${c.stage ? `<div class="stage">${esc(c.stage)}</div>` : ''}
+      ${c.error ? `<div class="errmsg">${esc(c.error)}</div>` : ''}
+      ${c.ready ? `<div class="meta"><span>${c.n_files} files</span><span>${c.n_chapters} sections</span><span>${c.n_summarized} described</span></div>` : ''}
       <div class="acts">
-        <button class="btn sm" data-act="reindex" data-id="${c.id}" ${busy ? 'disabled' : ''}>
-          ${busy ? '索引中…' : '重建索引'}</button>
-        <button class="btn sm" data-act="rename" data-id="${c.id}">改名</button>
-        <button class="btn sm" data-act="remove" data-id="${c.id}">移除</button>
+        <button class="btn sm" data-act="reindex" data-id="${c.id}" ${busy?'disabled':''}>${busy?'Indexing…':'Rebuild'}</button>
+        <button class="btn sm" data-act="rename" data-id="${c.id}">Rename</button>
+        <button class="btn sm" data-act="remove" data-id="${c.id}">Remove</button>
       </div>
+      ${open ? `<div class="tree" id="tr-${c.id}">${treeHTML(TREE[c.id], 0)}</div>` : ''}
     </div>`;
   }).join('');
 }
 
-function renderScope(){
-  const sel = selected();
-  const ready = STATE.corpora.filter(c => c.ready);
-  if (!ready.length){ $('#scope').textContent = '还没有可用的索引'; $('#send').disabled = true; return; }
-  $('#scope').textContent = sel.length
-    ? `范围：${sel.map(nameOf).join('、')}（${sel.length}/${ready.length}）`
-    : `范围：全部 ${ready.length} 个已索引目录`;
-  $('#send').disabled = false;
+function treeHTML(tree, depth){
+  if (!tree) return '<div class="tempty">Loading…</div>';
+  if (tree.error) return `<div class="tempty">${esc(tree.error)}</div>`;
+  const nodes = tree.nodes || [];
+  if (!nodes.length) return '<div class="tempty">Nothing indexed yet</div>';
+  const walk = (ns, d) => ns.map(n => n.type === 'dir'
+    ? `<div class="tn dir" data-dir="${esc(n.path)}" style="padding-left:${8+d*13}px">
+         <span class="k">▶</span><span class="t">${esc(n.name)}</span><span class="c">${n.n_files}</span>
+       </div><div class="kids" data-of="${esc(n.path)}" ${d===0?'':'hidden'}>${walk(n.children||[], d+1)}</div>`
+    : `<div class="tn file" title="${esc(n.path)}" style="padding-left:${20+d*13}px">
+         <i class="no"></i><span class="t">${esc(n.name)}</span><span class="c">${n.n_chapters}</span>
+       </div>`
+  ).join('');
+  return walk(nodes, depth) + (tree.truncated ? '<div class="tempty">…truncated</div>' : '');
 }
-const selected = () => [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
 
-// ── 目录操作 ────────────────────────────────────────────────────────────
-$('#corpora').addEventListener('click', async e => {
+async function toggleTree(id){
+  if (OPEN.has(id)){ OPEN.delete(id); renderList(); return; }
+  if (!TREE[id]){
+    try{ TREE[id] = await (await fetch(`/api/corpora/${id}/tree`)).json(); }
+    catch(e){ TREE[id] = {error:'failed to load'}; }
+    delete TREE[id].__open;
+  }
+  OPEN.add(id); renderList();
+}
+
+$('#list').addEventListener('click', async e => {
+  const tog = e.target.closest('[data-tog]');
+  if (tog){ toggleTree(tog.dataset.tog); return; }
+  const dir = e.target.closest('.tn.dir');
+  if (dir){
+    const kids = document.querySelector(`.kids[data-of="${CSS.escape(dir.dataset.dir)}"]`);
+    if (kids){ kids.hidden = !kids.hidden; dir.querySelector('.k').textContent = kids.hidden ? '▶' : '▼'; }
+    return;
+  }
   const b = e.target.closest('button[data-act]');
   if (!b) return;
   const {act, id} = b.dataset;
   if (act === 'remove'){
-    if (!confirm('移除该目录并删除它的索引？')) return;
+    if (!confirm('Remove this corpus and delete its index?')) return;
     await fetch(`/api/corpora/${id}`, {method:'DELETE'});
+    OPEN.delete(id); delete TREE[id];
   } else if (act === 'reindex'){
     await fetch(`/api/corpora/${id}/reindex`, {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({})});
+      headers:{'Content-Type':'application/json'}, body:'{}'});
   } else if (act === 'rename'){
-    const n = prompt('新的显示名称', nameOf(id));
+    const n = prompt('New display name', (S.corpora.find(c => c.id===id)||{}).name || '');
     if (!n) return;
     await fetch(`/api/corpora/${id}`, {method:'PATCH',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:n})});
   }
-  loadState();
+  load();
 });
-$('#corpora').addEventListener('change', e => { if (e.target.dataset.sel) renderScope(); });
 
-// ── 目录浏览器 ──────────────────────────────────────────────────────────
-$('#addBtn').onclick = () => { $('#dlg').showModal(); browse(BROWSE_PATH || STATE.home || '/'); };
+$('#list').addEventListener('change', e => { if (e.target.dataset.sel) renderScope(); });
+
+function renderScope(){
+  const sel = [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
+  const ready = S.corpora.filter(c => c.ready);
+  if (!ready.length){ $('#scope').textContent = 'No indexed corpora yet'; $('#send').disabled = true; return; }
+  $('#scope').textContent = sel.length
+    ? `Scope: ${sel.map(id => (S.corpora.find(c=>c.id===id)||{}).name||id).join(', ')}  (${sel.length}/${ready.length})`
+    : `Scope: all ${ready.length} indexed corpora`;
+  $('#send').disabled = false;
+}
+const picked = () => [...document.querySelectorAll('[data-sel]:checked')].map(e => e.dataset.sel);
+
+// ── directory browser ───────────────────────────────────────────────────
+$('#addBtn').onclick = () => { $('#dlg').showModal(); browse(CUR?.path || S.data_root || '/'); };
 $('#dlgClose').onclick = () => $('#dlg').close();
-$('#upBtn').onclick = () => { if (CURRENT?.parent) browse(CURRENT.parent); };
-
-async function browse(path){
+$('#upBtn').onclick = () => { if (CUR?.parent) browse(CUR.parent); };
+async function browse(p){
   $('#dlgErr').textContent = '';
-  const r = await fetch('/api/browse?path=' + encodeURIComponent(path));
-  const d = await r.json();
-  CURRENT = d; BROWSE_PATH = d.path;
-  if (d.error){ $('#dlgErr').textContent = d.error; }
-  $('#crumb').textContent = d.path;
-  $('#upBtn').disabled = !d.parent;
-  $('#dirs').innerHTML = (d.dirs || []).map(x =>
-    `<li data-path="${esc(x.path)}"><span class="ico">▸</span>${esc(x.name)}</li>`).join('')
-    || '<li style="cursor:default;color:var(--text-3)">（没有子目录）</li>';
+  CUR = await (await fetch('/api/browse?path=' + encodeURIComponent(p))).json();
+  $('#crumb').textContent = CUR.path || p;
+  $('#upBtn').disabled = !CUR.parent;
+  $('#dirs').innerHTML = (CUR.dirs||[]).map(d =>
+    `<li data-path="${esc(d.path)}"><span class="i">▸</span>${esc(d.name)}</li>`).join('')
+    || '<li style="cursor:default;color:var(--text-3)">(no sub-directories)</li>';
 }
 $('#dirs').addEventListener('click', e => {
   const li = e.target.closest('li[data-path]');
   if (li) browse(li.dataset.path);
 });
 $('#useBtn').onclick = async () => {
-  if (!CURRENT?.path) return;
-  const body = {path: CURRENT.path, name: $('#alias').value.trim(),
-                deep_index: $('#deep').checked};
+  if (!CUR?.path) return;
   const r = await fetch('/api/corpora', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({path: CUR.path, name: $('#alias').value.trim(), deep_index: $('#deep').checked})});
   const d = await r.json();
   if (d.error){ $('#dlgErr').textContent = d.error; return; }
-  $('#dlg').close(); $('#alias').value = '';
-  loadState();
+  $('#dlg').close(); $('#alias').value = ''; load();
 };
 
-// ── 提问（POST + SSE）──────────────────────────────────────────────────
+// ── ask ─────────────────────────────────────────────────────────────────
 function addMsg(cls, html){
-  const div = document.createElement('div');
-  div.className = 'msg ' + cls;
-  div.innerHTML = html;
-  $('#chat').appendChild(div);
-  $('#chat').scrollTop = $('#chat').scrollHeight;
-  return div;
+  const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html;
+  $('#chat').appendChild(d); $('#chat').scrollTop = $('#chat').scrollHeight; return d;
 }
-
-function stepLine(n){
-  const picked = (n.picked || []).map(p => pretty(p)).join('、') || '—';
-  const where = n.level === 'dir' ? pretty(n.where) : pretty(n.where);
-  const label = n.level === 'dir' ? '目录' : '章节';
-  return `<div class="step">[${label}] ${esc(where)}<br>&nbsp;&nbsp;→ <b>${esc(picked)}</b>`
-    + (n.note ? ` <span class="note">(${esc(n.note)})</span>` : '') + '</div>';
-}
-
 async function ask(){
-  const question = $('#q').value.trim();
-  if (!question) return;
+  const q = $('#q').value.trim();
+  if (!q) return;
   $('#q').value = ''; $('#q').style.height = 'auto';
   $('#chat').querySelector('.empty')?.remove();
-
-  addMsg('user', `<div class="who">你</div><div class="body">${esc(question)}</div>`);
+  addMsg('user', `<div class="who">You</div><div class="bubble">${esc(q)}</div>`);
   const bot = addMsg('bot', `<div class="who">SuperIndex</div>
-    <details class="trace" open><summary>检索路径</summary><div class="steps"></div></details>
-    <div class="stage">准备中…</div><div class="body"></div><div class="sources"></div>`);
-  const steps = bot.querySelector('.steps'), stage = bot.querySelector('.stage'),
-        body = bot.querySelector('.body'), srcs = bot.querySelector('.sources');
-
+    <details class="trace" open><summary>Retrieval path</summary><div class="steps"></div></details>
+    <div class="stage">Starting…</div><div class="bubble"></div><div class="srcs"></div>`);
+  const steps = bot.querySelector('.steps'), stg = bot.querySelector('.stage'),
+        bub = bot.querySelector('.bubble'), srcs = bot.querySelector('.srcs');
   $('#send').disabled = true;
   try{
-    const r = await fetch('/api/ask', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({question, corpus_ids: selected()})});
+    const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({question:q, corpus_ids: picked()})});
     if (!r.ok){ const e = await r.json(); throw new Error(e.error || r.statusText); }
-
-    const reader = r.body.getReader(), dec = new TextDecoder();
+    const rd = r.body.getReader(), dec = new TextDecoder();
     let buf = '', acc = '';
-    while (true){
-      const {value, done} = await reader.read();
+    for(;;){
+      const {value, done} = await rd.read();
       if (done) break;
       buf += dec.decode(value, {stream:true});
-      const parts = buf.split('\n\n');
-      buf = parts.pop();
+      const parts = buf.split('\n\n'); buf = parts.pop();
       for (const raw of parts){
-        const ev = (raw.match(/^event: (.+)$/m) || [])[1];
-        const dt = (raw.match(/^data: (.+)$/m) || [])[1];
+        const ev = (raw.match(/^event: (.+)$/m)||[])[1];
+        const dt = (raw.match(/^data: (.+)$/m)||[])[1];
         if (!ev || dt === undefined) continue;
         let d; try{ d = JSON.parse(dt); }catch{ continue; }
-        if (ev === 'stage') stage.textContent = d.text;
-        else if (ev === 'nav') steps.insertAdjacentHTML('beforeend', stepLine(d));
-        else if (ev === 'sources'){
-          srcs.innerHTML = '<div class="who" style="margin-bottom:4px">来源</div>' +
-            d.map(s => `<div class="src">${esc(pretty(s.file))} § ${esc(s.title)} (${s.start}-${s.end})</div>`).join('');
-        }
-        else if (ev === 'answer'){ stage.textContent = ''; acc += d.delta; body.innerHTML = mdInline(acc); }
-        else if (ev === 'error'){ stage.textContent = ''; body.innerHTML += `<div class="err">${esc(d.message)}</div>`; }
-        else if (ev === 'done'){ stage.textContent = d.ok ? `完成 · ${d.ms} ms` : '未完成'; }
+        if (ev === 'stage') stg.textContent = d.text;
+        else if (ev === 'nav') steps.insertAdjacentHTML('beforeend',
+          `<div class="step">[${d.level==='dir'?'dir':'section'}] ${esc(d.where)}
+           <br>→ <b>${esc((d.picked||[]).join('、'))}</b>${d.note?` <span class="fb">(${esc(d.note)})</span>`:''}</div>`);
+        else if (ev === 'sources') srcs.innerHTML = (d||[]).map(s =>
+          `<div>${esc(s.file)} · ${esc(s.title)} (${s.start}-${s.end})</div>`).join('') || '';
+        else if (ev === 'answer'){ stg.textContent=''; acc += d.delta; bub.innerHTML = md(acc); }
+        else if (ev === 'error'){ stg.textContent=''; bub.innerHTML += `<div class="err">${esc(d.message)}</div>`; }
+        else if (ev === 'done'){ stg.textContent = d.ok ? `Done · ${d.ms} ms` : 'Incomplete'; }
       }
       $('#chat').scrollTop = $('#chat').scrollHeight;
     }
-  }catch(e){
-    stage.textContent = '';
-    body.innerHTML += `<div class="err">${esc(e.message)}</div>`;
-  }
+  }catch(e){ stg.textContent=''; bub.innerHTML += `<div class="err">${esc(e.message)}</div>`; }
   $('#send').disabled = false;
 }
-
 $('#send').onclick = ask;
-$('#q').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); ask(); }
-});
+$('#q').addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); ask(); } });
 $('#q').addEventListener('input', e => {
-  e.target.style.height = 'auto';
-  e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
+  e.target.style.height='auto'; e.target.style.height = Math.min(e.target.scrollHeight,170)+'px';
 });
 
-loadState();
-setInterval(loadState, 3000);
-
-// Deep link: /?q=<question> asks on load, so a question can be shared or
-// bookmarked. Also what makes the flow testable from a headless browser.
-const initialQ = new URLSearchParams(location.search).get('q');
-if (initialQ){
-  $('#q').value = initialQ;
-  setTimeout(() => ask(), 400);      // let the first /api/state land
-}
+load();
+setInterval(load, 3000);
+const iq = new URLSearchParams(location.search).get('q');
+if (iq){ $('#q').value = iq; setTimeout(ask, 500); }
 </script>
 </body>
 </html>
