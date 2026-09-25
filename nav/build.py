@@ -227,6 +227,20 @@ def scan(root: Path, includes: set[str], excludes: set[str],
         parts = set(p.relative_to(root).parts)
         return bool(parts & excludes)
 
+    prev_dirs = previous.dirs if previous is not None else {}
+
+    def _dir(rp: str, name: str, parent: Optional[str]) -> DirEntry:
+        """Build a DirEntry, carrying over the old summary.
+
+        Directory summaries are derived from their children and cost an LLM
+        call each, so they are carried over exactly like file summaries.
+        Whether the carried-over one is still *accurate* is decided later, in
+        summarize_files() — see the staleness propagation there.
+        """
+        old = prev_dirs.get(rp)
+        return DirEntry(rel_path=rp, name=name, parent=parent,
+                        summary=old.summary if old else "")
+
     m.dirs[""] = DirEntry(rel_path="", name=root.name or "/", parent=None)
 
     count = 0
@@ -236,12 +250,12 @@ def scan(root: Path, includes: set[str], excludes: set[str],
         if skip(here):
             continue
         rp = rel(here) if here != root else ""
-        entry = m.dirs.setdefault(rp, DirEntry(rel_path=rp, name=here.name,
-                                               parent=None if rp == "" else rel(here.parent)))
+        entry = m.dirs.setdefault(
+            rp, _dir(rp, here.name, None if rp == "" else rel(here.parent)))
         entry.parent = None if rp == "" else rel(here.parent)
         for d in dirnames:
             crp = rel(here / d)
-            m.dirs.setdefault(crp, DirEntry(rel_path=crp, name=d, parent=rp))
+            m.dirs.setdefault(crp, _dir(crp, d, rp))
             entry.child_dirs.append(crp)
         for fn in sorted(filenames):
             fpath = here / fn
@@ -304,10 +318,21 @@ def _chapter_outline(chapters: list[Chapter], limit: int = 40) -> str:
     return "\n".join(out)
 
 
+def _ancestor_dirs(rel_path: str) -> list[str]:
+    """`2024/annual/A.md` -> `["2024", "2024/annual"]`.
+
+    Used to propagate staleness: a directory's summary is derived from its
+    children's summaries, so any changed descendant makes it stale.
+    """
+    parts = rel_path.split("/")[:-1]
+    return ["/".join(parts[:i + 1]) for i in range(len(parts))]
+
+
 def summarize_files(m: Manifest, index_dir: Path, model: str, workers: int,
                     force: bool = False) -> int:
     """One line per file, then one per directory (bottom-up)."""
     todo = [f for f in m.files.values() if force or not f.summary]
+    before = {f.rel_path: f.summary for f in todo}
     print(f"  文件摘要: {len(todo)} 待生成 / {len(m.files)} 总数")
 
     def one(fe: FileEntry) -> tuple[str, str]:
@@ -328,21 +353,36 @@ def summarize_files(m: Manifest, index_dir: Path, model: str, workers: int,
             print(f"    ! {fe.rel_path}: {exc}")
             return fe.rel_path, ""
 
+    changed_files: set[str] = set()
     if todo:
+        done: list[tuple[str, str]] = []
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(one, fe): fe for fe in todo}
             for i, fut in enumerate(as_completed(futs), 1):
                 rp, s = fut.result()
+                done.append((rp, s))
                 if s:
                     m.files[rp].summary = s
                 if i % 25 == 0 or i == len(todo):
                     print(f"    {i}/{len(todo)}")
+        # Only an actually-different summary invalidates the parents; a
+        # regeneration that produced the same text changes nothing upstream.
+        changed_files = {rp for rp, s in done if s and s != before.get(rp, "")}
 
-    # directories: deepest first so children are ready
+    # A directory with a summary is still stale when something underneath it
+    # changed — otherwise editing a file leaves every ancestor describing the
+    # previous version, silently.
+    stale_dirs: set[str] = set()
+    for rp in changed_files:
+        stale_dirs.update(_ancestor_dirs(rp))
+
     dirs_todo = [d for d in m.dirs.values()
-                 if d.rel_path != "" and (force or not d.summary)]
+                 if d.rel_path != "" and (force or not d.summary
+                                          or d.rel_path in stale_dirs)]
     dirs_todo.sort(key=lambda d: -d.rel_path.count("/"))
-    print(f"  目录摘要: {len(dirs_todo)} 待生成")
+    stale_count = sum(1 for d in dirs_todo if d.summary)
+    extra = f"，其中 {stale_count} 个因内容变化重建" if stale_count else ""
+    print(f"  目录摘要: {len(dirs_todo)} 待生成{extra}")
     for i, d in enumerate(dirs_todo, 1):
         kids = [m.dirs[c] for c in d.child_dirs] + [m.files[f] for f in d.files]
         listing = "\n".join(f"- {k.name}: {k.summary or '(无摘要)'}" for k in kids[:60])

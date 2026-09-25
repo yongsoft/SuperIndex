@@ -80,6 +80,31 @@ def year_hints(question: str) -> list[str]:
     return re.findall(r"(?:19|20)\d{2}", question)
 
 
+def _score_candidate(question: str, path: str, summary: str,
+                     years: list[str]) -> int:
+    """Score one candidate against the question, path and summary together.
+
+    A summary hit is worth more than a path hit (2 vs 1 for a term, equal for a
+    year) because the two signals are not equally trustworthy: the summary is
+    derived from the document's own content, while the path is only as good as
+    the folder name someone happened to choose. The fallback exists precisely
+    for the case where those names are unhelpful, so it must not lean on them.
+    """
+    low_path = path.lower()
+    low_sum = (summary or "").lower()
+    score = 0
+    for year in years:
+        if year in path or year in low_sum:
+            score += 3
+    for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{3,}", question):
+        t = tok.lower()
+        if t in low_path:
+            score += 1
+        if t in low_sum:
+            score += 2
+    return score
+
+
 class Navigator:
     def __init__(self, index_dir: str | Path, model: str = llm.DEFAULT_MODEL,
                  effort: str = llm.DEFAULT_EFFORT, verbose: bool = True):
@@ -253,17 +278,16 @@ class Navigator:
         return picked, trace
 
     def _fallback_dirs(self, question: str, dirs: list) -> list[str]:
-        """Deterministic backstop: match year / name tokens against the question."""
+        """Deterministic backstop: match the question against path *and* summary.
+
+        Summaries matter more here than anywhere else — this path runs when the
+        model did not pick, so it is the last chance to find a directory whose
+        name says nothing about its contents.
+        """
         years = year_hints(question)
         scored = []
         for d in dirs:
-            s = 0
-            for y in years:
-                if y in d.rel_path:
-                    s += 3
-            for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{3,}", question):
-                if tok.lower() in d.rel_path.lower():
-                    s += 1
+            s = _score_candidate(question, d.rel_path, d.summary, years)
             if s:
                 scored.append((s, d.rel_path))
         scored.sort(reverse=True)
@@ -333,13 +357,11 @@ class Navigator:
 
     def _fallback_files(self, question: str, pool: list[FileEntry],
                         top_n: int) -> list[FileEntry]:
+        """Deterministic backstop over files; path and summary both count."""
         years = year_hints(question)
         scored = []
         for f in pool:
-            s = sum(3 for y in years if y in f.rel_path)
-            for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{3,}", question):
-                if tok.lower() in f.rel_path.lower():
-                    s += 1
+            s = _score_candidate(question, f.rel_path, f.summary, years)
             scored.append((s, f))
         scored.sort(key=lambda x: -x[0])
         top = [f for s, f in scored[:top_n]]

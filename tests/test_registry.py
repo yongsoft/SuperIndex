@@ -24,8 +24,9 @@ sys.path.insert(0, str(ROOT))
 from nav.registry import (  # noqa: E402
     Corpus, Registry, STATUS_ERROR, STATUS_READY,
 )
+from nav.build import _ancestor_dirs, scan, summarize_files  # noqa: E402
 from nav.route import (MultiNavigator, Result, build_context,  # noqa: E402
-                       display_path, merge_manifests)
+                       display_path, merge_manifests, _score_candidate)
 from nav.store import Manifest  # noqa: E402
 
 PASS, FAIL = [], []
@@ -424,6 +425,122 @@ def test_data_root_dropzone(tmp: Path) -> None:
                 check(f"{label}仍拒绝", "inside the project" in str(exc))
 
 
+@contextlib.contextmanager
+def stubbed_chat(prefix: str = "SUM"):
+    """Deterministic summaries plus a call counter, so regeneration is visible."""
+    import nav.llm as llm_mod
+    calls: list[str] = []
+    real = llm_mod.chat
+
+    def fake(prompt, **kw):
+        calls.append(prompt)
+        return f"{prefix}{len(calls)}"
+
+    llm_mod.chat = fake
+    try:
+        yield calls
+    finally:
+        llm_mod.chat = real
+
+
+def test_ancestor_dirs() -> None:
+    print("\n[_ancestor_dirs]")
+    check("三层", _ancestor_dirs("a/b/c.md") == ["a", "a/b"],
+          str(_ancestor_dirs("a/b/c.md")))
+    check("一层", _ancestor_dirs("a/c.md") == ["a"], str(_ancestor_dirs("a/c.md")))
+    check("根层文件", _ancestor_dirs("c.md") == [], str(_ancestor_dirs("c.md")))
+
+
+def test_dir_summary_carried_and_invalidated(tmp: Path) -> None:
+    print("\n[目录摘要：继承 + 失效传播]")
+    root = tmp / "stale" / "corpus"
+    (root / "2024" / "annual").mkdir(parents=True)
+    (root / "2024" / "annual" / "A.md").write_text("# A\n\n## S\n\nalpha\n", encoding="utf-8")
+    (root / "2024" / "annual" / "B.md").write_text("# B\n\n## S\n\nbeta\n", encoding="utf-8")
+    idx = tmp / "stale" / "idx"
+    idx.mkdir(parents=True)
+
+    def build(prev=None):
+        m, trees = scan(root, {".md"}, set(), previous=prev)
+        for rp, (ch, ln) in trees.items():
+            m.save_tree(idx, m.files[rp].tree_key, ch, ln)
+        m.save(idx)
+        return m
+
+    def phase(prev):
+        with stubbed_chat() as calls:
+            m = build(prev)
+            summarize_files(m, idx, "m", 2)
+        return m, len(calls)
+
+    m1, n1 = phase(None)
+    check("首次：2 文件 + 2 目录 = 4 次", n1 == 4, str(n1))
+    check("目录摘要有内容", bool(m1.dirs["2024/annual"].summary)
+          and bool(m1.dirs["2024"].summary))
+
+    m2, n2 = phase(m1)
+    check("无改动：0 次调用（目录摘要被继承）", n2 == 0, str(n2))
+    check("继承的是同一个摘要",
+          m2.dirs["2024"].summary == m1.dirs["2024"].summary)
+
+    (root / "2024" / "annual" / "A.md").write_text(
+        "# A\n\n## S\n\nalpha CHANGED\n", encoding="utf-8")
+    m3, n3 = phase(m2)
+    check("改一个文件：1 文件 + 2 个祖先目录 = 3 次", n3 == 3, str(n3))
+    check("祖先目录摘要已更新",
+          m3.dirs["2024"].summary != m2.dirs["2024"].summary,
+          f"{m2.dirs['2024'].summary} -> {m3.dirs['2024'].summary}")
+    check("未变的 B 没有被重算",
+          m3.files["2024/annual/B.md"].summary == m2.files["2024/annual/B.md"].summary)
+
+    (root / "2025").mkdir()
+    (root / "2025" / "C.md").write_text("# C\n\n## S\n\ngamma\n", encoding="utf-8")
+    m4, n4 = phase(m3)
+    check("新增文件：新文件 + 新目录 = 2 次", n4 == 2, str(n4))
+    check("无关的 2024 目录保持不动",
+          m4.dirs["2024"].summary == m3.dirs["2024"].summary)
+
+
+def test_score_candidate_prefers_summary() -> None:
+    print("\n[回退打分：摘要权重高于路径]")
+    q = "友邦保险 2024 年的每股股息是多少？"
+    years = ["2024"]
+
+    by_summary = _score_candidate(q, "归档/A", "友邦保险 2024 年股息", years)
+    by_path = _score_candidate(q, "友邦保险/2024", "", years)
+    check("摘要命中 > 路径命中（同名时）", by_summary > 0, str(by_summary))
+    check("只有路径也能得分", by_path > 0, str(by_path))
+    check("名字毫无信息时靠摘要得分", by_summary >= 5, str(by_summary))
+    check("两者都无 → 0 分",
+          _score_candidate(q, "杂项", "会议纪要", years) == 0)
+    check("年份在摘要里也算",
+          _score_candidate("2024 年数据", "x", "2024 年报", years) >= 3)
+    check("摘要为空不报错",
+          _score_candidate(q, "友邦保险/2024", None, years) > 0)
+
+
+def test_fallback_uses_summary(tmp: Path) -> None:
+    print("\n[确定性回退能靠摘要找到「名字无用」的目录]")
+    from nav.store import DirEntry
+    reg = new_registry(tmp / "fb")
+    src = make_corpus(tmp / "fb" / "src", "one", SAMPLE)
+    c = reg.add(str(src), name="c")
+    reg.index(c.id, summarize=False)
+    nav = reg.navigator([c.id])
+
+    dirs = [
+        DirEntry(rel_path="归档/A", name="A", parent="归档",
+                 summary="友邦保险 2024 年年度报告，含每股股息"),
+        DirEntry(rel_path="归档/B", name="B", parent="归档",
+                 summary="中国平安 2023 年年度报告"),
+        DirEntry(rel_path="杂项", name="杂项", parent=None, summary="会议纪要"),
+    ]
+    picked = nav._fallback_dirs("友邦保险 2024 年的每股股息是多少？", dirs)
+    check("选中了名字无用但摘要正确的目录",
+          picked == ["归档/A"], str(picked))
+    check("无关目录未被选中", "归档/B" not in picked and "杂项" not in picked)
+
+
 def main() -> int:
     print("=" * 74)
     print("Corpus registry tests（全部离线，不调用 LLM）")
@@ -435,6 +552,10 @@ def main() -> int:
         test_indexing_and_changes(tmp)
         test_multi_corpus(tmp)
         test_watcher_modes(tmp)
+        test_ancestor_dirs()
+        test_dir_summary_carried_and_invalidated(tmp)
+        test_score_candidate_prefers_summary()
+        test_fallback_uses_summary(tmp)
         test_display_path(tmp)
         test_corpus_tree(tmp)
         test_data_root_dropzone(tmp)
